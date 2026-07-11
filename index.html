@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Homeschool Planner</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Planner">
+<meta name="theme-color" content="#F5F4EC">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="manifest" href='data:application/manifest+json,{"name":"Homeschool Planner","short_name":"Planner","display":"standalone","background_color":"%23F5F4EC","theme_color":"%23F5F4EC","start_url":"."}'>
 <style>
 /* ================================================================
    SECTION 0 — STYLES
@@ -918,6 +925,13 @@ async function renderBackupList(box){
   }
 })();
 window.addEventListener("beforeunload",e=>{ if(State.dirty){ saveNow(false); } });
+
+/* Hosted copies (https, e.g. GitHub Pages) also work offline after the first
+   visit: a small companion file, sw.js, caches the app on the device. On the
+   Mac's local file this does nothing — the local file needs no caching. */
+if(location.protocol==="https:" && "serviceWorker" in navigator){
+  navigator.serviceWorker.register("sw.js").catch(()=>{/* sw.js not present — fine */});
+}
 </script>
 </body>
 </html>
