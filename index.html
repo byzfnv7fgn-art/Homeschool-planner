@@ -124,6 +124,7 @@ table.plain th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;colo
 .weekday-row label.on{background:var(--spruce-soft);border-color:var(--spruce);color:var(--spruce-dark)}
 .weekday-row input{position:absolute;opacity:0}
 details.adv{margin-top:8px}
+.app-footer{text-align:center;color:var(--muted);font-size:12px;font-family:var(--font-mono);padding:26px 0 4px;letter-spacing:.04em}
 details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight:600}
 </style>
 </head>
@@ -141,7 +142,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", stage: "Stage 1 — Foundation", schemaVersion: 1, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.1.3", stage: "Stage 1 — Foundation", schemaVersion: 1, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -582,11 +583,12 @@ function render(){
         el("div",{class:"bp-title"},"Homeschool Planner")),
       el("div",{class:"save-status",id:"saveStatus"}))));
   renderSaveStatus();
-  if(!State.data){ app.append(renderSetup()); return; }
+  if(!State.data){ app.append(renderSetup(), el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage)); return; }
   const tabs=[["home","Home"],["people","People"],["year","School Year"],["data","Data & Backups"]];
   app.append(el("nav",{class:"tabs"},
     tabs.map(([id,label])=>el("button",{class:State.ui.screen===id?"active":"", onclick:()=>{State.ui.screen=id;render();}},label))));
   app.append({home:renderHome, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
+  app.append(el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage));
 }
 function renderSaveStatus(){
   const n=document.getElementById("saveStatus"); if(!n) return;
@@ -850,6 +852,7 @@ function renderData(){
     el("div",{class:"kv"},el("b",{},"Mode"),el("span",{}, s.mode==="folder" ? "Folder — saving automatically to “"+esc(s.dirHandle?.name||"?")+"”" : "Browser — changes kept on this device; save a copy to Files below")),
     el("div",{class:"kv"},el("b",{},"Last saved"),el("span",{},s.lastSavedAt?fmtTime(s.lastSavedAt):"—")),
     el("div",{class:"kv"},el("b",{},"Data file"),el("span",{class:"mono"},APP.dataFileName+" · schema v"+State.data.schemaVersion)),
+    el("div",{class:"kv"},el("b",{},"App version"),el("span",{class:"mono"},"v"+APP.version+" · "+APP.stage)),
     el("div",{class:"row",style:"margin-top:10px"},
       el("button",{class:"btn secondary small",onclick:()=>saveNow(true)},"Save now"),
       el("button",{class:"btn secondary small",onclick:exportJSON}, s.mode==="browser"?"Save a copy to Files":"Export a copy"),
