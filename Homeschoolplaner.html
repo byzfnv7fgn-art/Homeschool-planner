@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Homeschool Planner</title>
+<style>
+/* ================================================================
+   SECTION 0 — STYLES
+   0.1 Design tokens   0.2 Base & layout   0.3 Components
+   ================================================================ */
+
+/* --- 0.1 Design tokens --- */
+:root{
+  --paper:#F5F4EC;          /* page background: soft warm paper */
+  --card:#FFFFFF;           /* panels */
+  --ink:#25302A;            /* primary text: green-black ink */
+  --muted:#6E756D;          /* secondary text */
+  --spruce:#3D5A49;         /* primary action */
+  --spruce-dark:#2E4638;
+  --spruce-soft:#E7EEE8;    /* tinted fills */
+  --gold:#B8892F;           /* attention / unsaved */
+  --madder:#A4553F;         /* destructive */
+  --madder-soft:#F6E9E4;
+  --line:#DCD8C8;           /* hairlines */
+  --line-soft:#E9E6DA;
+  --radius:10px;
+  --font-display:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+  --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--paper);color:var(--ink);font-family:var(--font-ui);font-size:16px;line-height:1.5}
+button{font-family:var(--font-ui)}
+:focus-visible{outline:3px solid var(--gold);outline-offset:2px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* --- 0.2 Base & layout --- */
+#app{max-width:880px;margin:0 auto;padding:0 16px 90px}
+header.bookplate{padding:22px 4px 12px;border-bottom:1px solid var(--ink);position:relative}
+header.bookplate::after{content:"";display:block;position:absolute;left:0;right:0;bottom:3px;border-bottom:1px solid var(--ink)}
+.bp-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.bp-title{font-family:var(--font-display);font-size:26px;letter-spacing:.12em;text-transform:uppercase;font-weight:600}
+.save-status{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);white-space:nowrap}
+.save-dot{width:10px;height:10px;border-radius:50%;background:var(--spruce);flex:none}
+.save-dot.dirty{background:var(--gold);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+
+nav.tabs{display:flex;gap:4px;margin:16px 0 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+nav.tabs button{appearance:none;border:none;background:none;padding:10px 14px;font-size:15px;color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-1px}
+nav.tabs button.active{color:var(--ink);border-bottom-color:var(--spruce);font-weight:600}
+nav.tabs button:hover{color:var(--ink)}
+
+h2.screen-title{font-family:var(--font-display);font-size:22px;font-weight:600;margin:6px 0 4px}
+p.screen-note{color:var(--muted);font-size:14px;margin-bottom:18px;max-width:60ch}
+.eyebrow{font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+/* --- 0.3 Components --- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:16px}
+.card h3{font-family:var(--font-display);font-size:18px;font-weight:600;margin-bottom:10px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.spread{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.stack{display:flex;flex-direction:column;gap:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.grid2{grid-template-columns:1fr}}
+
+label.field{display:flex;flex-direction:column;gap:5px;font-size:13.5px;font-weight:600;color:var(--ink)}
+label.field span.hint{font-weight:400;color:var(--muted)}
+input[type=text],input[type=number],input[type=date],select,textarea{
+  font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#FDFCF8;color:var(--ink);min-height:44px;width:100%}
+textarea{min-height:70px;resize:vertical}
+input:focus,select:focus,textarea:focus{border-color:var(--spruce);outline:none;box-shadow:0 0 0 3px var(--spruce-soft)}
+
+.btn{appearance:none;border:1px solid var(--spruce);background:var(--spruce);color:#fff;font-size:15px;font-weight:600;
+  padding:10px 16px;border-radius:8px;cursor:pointer;min-height:44px}
+.btn:hover{background:var(--spruce-dark)}
+.btn.secondary{background:var(--card);color:var(--spruce);border-color:var(--spruce)}
+.btn.secondary:hover{background:var(--spruce-soft)}
+.btn.quiet{background:none;border-color:var(--line);color:var(--muted);font-weight:500}
+.btn.quiet:hover{color:var(--ink);border-color:var(--muted)}
+.btn.danger{background:var(--card);color:var(--madder);border-color:var(--madder)}
+.btn.danger:hover{background:var(--madder-soft)}
+.btn.small{min-height:36px;padding:6px 12px;font-size:13.5px}
+.btn:disabled{opacity:.5;cursor:default}
+
+.list-item{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--line-soft);flex-wrap:wrap}
+.list-item:last-child{border-bottom:none}
+.color-dot{width:16px;height:16px;border-radius:50%;flex:none;border:1px solid rgba(0,0,0,.15)}
+.li-main{flex:1;min-width:160px}
+.li-name{font-weight:600}
+.li-sub{font-size:13px;color:var(--muted)}
+.pill{display:inline-block;font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+  padding:3px 9px;border-radius:99px;background:var(--spruce-soft);color:var(--spruce-dark)}
+.pill.gold{background:#F3EAD6;color:#8A6716}
+.pill.gray{background:#ECEAE0;color:var(--muted)}
+
+.swatches{display:flex;gap:8px;flex-wrap:wrap}
+.swatch{width:34px;height:34px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.swatch.sel{border-color:var(--ink);box-shadow:0 0 0 2px #fff inset}
+
+.empty{padding:28px 10px;text-align:center;color:var(--muted);font-style:italic;font-family:var(--font-display);font-size:16px}
+.notice{background:var(--spruce-soft);border:1px solid #CBDACD;border-radius:var(--radius);padding:12px 14px;font-size:14px;margin-bottom:16px}
+.notice.warn{background:#F7F0DE;border-color:#E4D3A6}
+.mono{font-family:var(--font-mono);font-size:13px}
+.kv{display:flex;gap:8px;font-size:14px}.kv b{min-width:110px;font-weight:600}
+table.plain{width:100%;border-collapse:collapse;font-size:14px}
+table.plain td,table.plain th{padding:8px 6px;border-bottom:1px solid var(--line-soft);text-align:left;vertical-align:middle}
+table.plain th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+
+#toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:50;width:min(92vw,420px)}
+.toast{background:var(--ink);color:#F5F4EC;padding:12px 16px;border-radius:10px;font-size:14.5px;box-shadow:0 4px 14px rgba(0,0,0,.25);text-align:center}
+.toast.warn{background:#7A5A1D}
+.weekday-row{display:flex;gap:6px;flex-wrap:wrap}
+.weekday-row label{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:12px;font-weight:600;color:var(--muted);
+  border:1px solid var(--line);border-radius:8px;padding:8px 0;width:44px;cursor:pointer;background:#FDFCF8}
+.weekday-row label.on{background:var(--spruce-soft);border-color:var(--spruce);color:var(--spruce-dark)}
+.weekday-row input{position:absolute;opacity:0}
+details.adv{margin-top:8px}
+details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight:600}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toasts"></div>
+<script>
+"use strict";
+/* ================================================================
+   SECTION 1 — DATA & CONFIG
+   Pure data. No logic. Edit lists here (taxonomy also lives in the
+   data file once created, where it becomes user-editable in-app).
+   1.1 App identity   1.2 Taxonomy starter   1.3 Enumerations
+   1.4 Defaults
+   ================================================================ */
+
+/* --- 1.1 App identity & schema version --- */
+const APP = { name: "Homeschool Planner", stage: "Stage 1 — Foundation", schemaVersion: 1, dataFileName: "planner-data.json" };
+
+/* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
+const TAXONOMY_STARTER = {
+  categories: [
+    { name: "Together Time" },
+    { name: "Ordinary Days" },
+    { name: "Festival Days" },
+    { name: "Field Trips" },
+    { name: "Activities" }
+  ],
+  subjects: [
+    { name:"Bible", dept:"Bible", focuses:["Bible Reading","Scripture Memory","Catechism & Creeds","Devotional Theology","Church History"] },
+    { name:"History", dept:"Social Studies", focuses:["U.S. History"] },
+    { name:"Civics", dept:"Social Studies", focuses:[] },
+    { name:"Literature", dept:"English", focuses:["Classic Books","Folk & Fairy Tales","Poetry","Shakespeare"] },
+    { name:"Language Arts", dept:"English", focuses:["Phonics & Reading","Handwriting","Copywork","Dictation & Spelling","Recitation","Narration"] },
+    { name:"Foreign Language", dept:"World Languages", focuses:["Spanish","French"] },
+    { name:"Art", dept:"Fine Arts", focuses:["Picture Study","Drawing","Handicrafts"] },
+    { name:"Music", dept:"Fine Arts", focuses:["Composer Study","Folk Songs & Hymns","Music Theory & Solfege","Performing Arts"] },
+    { name:"Geography", dept:"Social Studies", focuses:["Mapwork & Drills","Regional Studies"] },
+    { name:"Math", dept:"Mathematics", focuses:["Arithmetic","Math Games"] },
+    { name:"Science", dept:"Science", focuses:["Nature Study","Science Reading"] },
+    { name:"PE", dept:"Physical Education / Health", focuses:["Swedish Drill","Sports & Movement"] },
+    { name:"Life Skills", dept:"Life Skills / Practical Arts", focuses:["Cooking & Nutrition","Gardening","Sewing & Textiles","Home Management"] },
+    { name:"Electives", dept:"Electives", focuses:[] }
+  ],
+  assignmentTypes: ["Lesson","Reading","Narration","Copywork","Recitation","Practice","Exam","Quiz","Paper","Lab","Project","Other"]
+};
+
+/* --- 1.3 Enumerations --- */
+const GRADE_LEVELS = ["PreK","K","1st","2nd","3rd","4th","5th","6th","7th","8th","9th","10th","11th","12th"];
+const CYCLES = [1,2,3,4];
+const TT_VARIANTS = ["A","B"];
+const PERSON_ROLES = ["student","parent"];
+const STUDENT_STATUSES = ["enrolled","sit-in","future"];
+const WEEKDAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+const STUDENT_COLORS = ["#3D5A49","#A4553F","#B8892F","#4A6FA5","#7B5AA6","#3E8E7E","#8A4E67","#5C6B3C"];
+
+/* --- 1.4 Defaults --- */
+const DEFAULTS = {
+  weekdayPattern: [1,2,3,4,5],   // Mon–Fri (0=Sun … 6=Sat) — projection only, per owner decision
+  targetDays: 180,
+  backupsToKeep: 30,             // plus one monthly keeper
+  browserBackupsToKeep: 5,       // rolling backups kept inside the browser (fallback mode)
+  activityLogCap: 500,
+  autosaveDelayMs: 900
+};
+
+/* ================================================================
+   SECTION 2 — SHARED HELPERS
+   Generic utilities only; no app state in here.
+   2.1 Ids & time   2.2 Dates   2.3 DOM   2.4 Misc
+   ================================================================ */
+
+/* --- 2.1 Ids & time --- */
+function uid(){ return "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,8); }
+function nowISO(){ return new Date().toISOString(); }
+function stamp(){ const d=new Date(),p=n=>String(n).padStart(2,"0");
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); }
+
+/* --- 2.2 Dates (dates are stored as "YYYY-MM-DD" strings) --- */
+function fmtDate(s){ if(!s) return "—"; const [y,m,d]=s.split("-").map(Number);
+  return new Date(y,m-1,d).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"}); }
+function fmtTime(iso){ if(!iso) return "—"; return new Date(iso).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}); }
+function yearLabelFromDate(s){ if(!s) return ""; const y=Number(s.slice(0,4)); const m=Number(s.slice(5,7));
+  return m>=6 ? y+"–"+(y+1) : (y-1)+"–"+y; }
+
+/* --- 2.3 DOM --- */
+function esc(s){ return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function el(tag, attrs, ...kids){
+  const n=document.createElement(tag);
+  for(const [k,v] of Object.entries(attrs||{})){
+    if(k==="class") n.className=v;
+    else if(k.startsWith("on")) n.addEventListener(k.slice(2),v);
+    else if(k==="html") n.innerHTML=v;
+    else if(v!==false&&v!=null) n.setAttribute(k,v===true?"":v);
+  }
+  for(const kid of kids.flat()){ if(kid==null||kid===false) continue;
+    n.append(kid.nodeType?kid:document.createTextNode(kid)); }
+  return n;
+}
+function clear(n){ while(n.firstChild) n.removeChild(n.firstChild); return n; }
+
+/* --- 2.4 Misc --- */
+function deepClone(o){ return JSON.parse(JSON.stringify(o)); }
+function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
+function toast(msg, warn){ const t=el("div",{class:"toast"+(warn?" warn":"")},msg);
+  document.getElementById("toasts").append(t); setTimeout(()=>t.remove(), warn?5200:3200); }
+function download(filename, text){
+  const a=el("a",{href:URL.createObjectURL(new Blob([text],{type:"application/json"})),download:filename});
+  document.body.append(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href); a.remove();},400);
+}
+/* ================================================================
+   SECTION 3 — STATE (single source of truth)
+   3.1 State object   3.2 Blank data file & entity factories
+   3.3 Change tracking & activity log   3.4 Schema upgrades
+   ================================================================ */
+
+/* --- 3.1 The one state object. All screens read from here. --- */
+const State = {
+  data: null,                 // the parsed data file — everything permanent lives in here
+  dirty: false,               // unsaved changes exist
+  storage: {
+    mode: null,               // "folder" (Chrome/Edge on Mac) | "browser" (Safari/iPad/iPhone)
+    dirHandle: null,          // folder mode: the chosen iCloud folder
+    loadedFileModified: null, // folder mode: data file's on-disk timestamp when we loaded it
+    lastSavedAt: null,
+    saving: false
+  },
+  ui: { screen: "home", editingPersonId: null, yearFormOpen: false, selectedYearId: null, personFormOpen: false }
+};
+
+/* --- 3.2 Blank data file & entity factories --- */
+function blankData(){
+  const t = nowISO();
+  return {
+    schemaVersion: APP.schemaVersion,
+    app: APP.name,
+    createdAt: t, modifiedAt: t,
+    taxonomy: deepClone(TAXONOMY_STARTER),   // editable copy; Category Manager UI arrives in Phase 2
+    people: [], schoolYears: [],
+    courses: [], assignments: [], instances: [], completions: [], books: [],
+    activityLog: [],
+    settings: { activeSchoolYearId: null }
+  };
+}
+function newPerson(){ const t=nowISO(); return { id:uid(), createdAt:t, modifiedAt:t,
+  name:"", role:"student", status:"enrolled", color:STUDENT_COLORS[(State.data?.people.length||0)%STUDENT_COLORS.length], notes:"" }; }
+function newSchoolYear(){ const t=nowISO(); return { id:uid(), createdAt:t, modifiedAt:t,
+  label:"", startDate:"", endDate:"", cycle:1, ttVariant:"A", targetDays:DEFAULTS.targetDays,
+  weekdayPattern:[...DEFAULTS.weekdayPattern], terms:[], breaks:[], studentGrades:{}, archived:false }; }
+
+/* --- 3.3 Change tracking, autosave trigger & activity log --- */
+function logActivity(what, detail){
+  State.data.activityLog.unshift({ id:uid(), at:nowISO(), what, detail: detail||"" });
+  if(State.data.activityLog.length > DEFAULTS.activityLogCap) State.data.activityLog.length = DEFAULTS.activityLogCap;
+}
+const scheduleSave = debounce(()=>saveNow(false), DEFAULTS.autosaveDelayMs);
+function markDirty(what, detail){
+  State.data.modifiedAt = nowISO();
+  if(what) logActivity(what, detail);
+  State.dirty = true;
+  renderSaveStatus();
+  scheduleSave();
+}
+
+/* --- 3.4 Schema upgrades: the data file carries its version; the app
+       upgrades older files on load so later field additions are routine. --- */
+function upgradeSchema(data){
+  if(typeof data.schemaVersion !== "number") throw new Error("Not a planner data file");
+  // while(data.schemaVersion < APP.schemaVersion){ switch(data.schemaVersion){ case 1: /* add fields */ data.schemaVersion=2; break; } }
+  return data;
+}
+function validateData(data){
+  if(!data || typeof data!=="object" || !Array.isArray(data.people) || !Array.isArray(data.schoolYears))
+    throw new Error("This file doesn't look like a Homeschool Planner data file.");
+  return data;
+}
+
+/* ================================================================
+   SECTION 4 — STORAGE
+   Two modes. FOLDER (Chrome/Edge on the Mac): the app reads/writes
+   planner-data.json in your chosen iCloud folder and keeps automatic
+   backups in backups/. BROWSER (Safari, iPad, iPhone): changes are
+   kept safely inside the browser, and you save a copy to Files with
+   one tap. Same data file either way.
+   4.1 Capability detection & handle memory   4.2 Folder mode
+   4.3 Backups (folder)   4.4 Browser mode    4.5 Save/load façade
+   4.6 Changed-on-disk protection             4.7 Export & restore
+   ================================================================ */
+
+/* --- 4.1 Capability detection + remembering the folder between visits --- */
+function folderCapable(){ return typeof window.showDirectoryPicker === "function"; }
+const idb = {
+  open(){ return new Promise((res,rej)=>{ const r=indexedDB.open("hsp",1);
+    r.onupgradeneeded=()=>r.result.createObjectStore("kv"); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); },
+  async get(k){ const db=await this.open(); return new Promise((res,rej)=>{ const t=db.transaction("kv").objectStore("kv").get(k);
+    t.onsuccess=()=>res(t.result); t.onerror=()=>rej(t.error); }); },
+  async set(k,v){ const db=await this.open(); return new Promise((res,rej)=>{ const t=db.transaction("kv","readwrite").objectStore("kv").put(v,k);
+    t.onsuccess=()=>res(); t.onerror=()=>rej(t.error); }); },
+  async del(k){ const db=await this.open(); return new Promise((res,rej)=>{ const t=db.transaction("kv","readwrite").objectStore("kv").delete(k);
+    t.onsuccess=()=>res(); t.onerror=()=>rej(t.error); }); }
+};
+async function permissionOK(handle, ask){
+  const opts={mode:"readwrite"};
+  if(await handle.queryPermission(opts)==="granted") return true;
+  if(ask && await handle.requestPermission(opts)==="granted") return true;
+  return false;
+}
+
+/* --- 4.2 Folder mode --- */
+async function chooseFolder(){
+  try{
+    const dir = await window.showDirectoryPicker({ mode:"readwrite" });
+    State.storage.dirHandle = dir;
+    await idb.set("dirHandle", dir);
+    const existing = await dir.getFileHandle(APP.dataFileName).catch(()=>null);
+    if(existing){
+      await loadFromFolder();
+      toast("Loaded your planner from " + dir.name);
+    } else {
+      State.data = blankData();
+      logActivity("Planner created", "New data file in folder “" + dir.name + "”");
+      State.storage.mode = "folder";
+      await saveNow(true);
+      toast("New planner created in " + dir.name);
+    }
+    State.storage.mode = "folder";
+    State.ui.screen = "home";
+    render();
+  }catch(e){ if(e && e.name!=="AbortError"){ console.error(e); toast("Couldn't open that folder: "+e.message, true); } }
+}
+async function loadFromFolder(){
+  const dir = State.storage.dirHandle;
+  const fh = await dir.getFileHandle(APP.dataFileName);
+  const file = await fh.getFile();
+  const data = validateData(upgradeSchema(JSON.parse(await file.text())));
+  State.data = data;
+  State.storage.mode = "folder";
+  State.storage.loadedFileModified = file.lastModified;
+  State.dirty = false;
+}
+async function writeFolderFile(name, text, subdir){
+  let dir = State.storage.dirHandle;
+  if(subdir) dir = await dir.getDirectoryHandle(subdir, { create:true });
+  const fh = await dir.getFileHandle(name, { create:true });
+  const w = await fh.createWritable();
+  await w.write(text); await w.close();
+  return fh;
+}
+
+/* --- 4.3 Automatic backups (folder mode): timestamped snapshot on every
+       save; keep the newest 30 plus the oldest snapshot of each month. --- */
+async function writeBackupAndPrune(text){
+  try{
+    await writeFolderFile("backup_" + stamp() + ".json", text, "backups");
+    const backups = await listFolderBackups();
+    const keep = new Set(backups.slice(0, DEFAULTS.backupsToKeep).map(b=>b.name));
+    const byMonth = {};
+    for(const b of backups){ const m=b.name.slice(7,14); // YYYY-MM
+      if(!byMonth[m] || b.name < byMonth[m]) byMonth[m]=b.name; }
+    Object.values(byMonth).forEach(n=>keep.add(n));
+    const dir = await State.storage.dirHandle.getDirectoryHandle("backups");
+    for(const b of backups) if(!keep.has(b.name)) await dir.removeEntry(b.name).catch(()=>{});
+  }catch(e){ console.error("Backup failed", e); toast("Saved, but the automatic backup failed: "+e.message, true); }
+}
+async function listFolderBackups(){
+  const out=[];
+  try{
+    const dir = await State.storage.dirHandle.getDirectoryHandle("backups");
+    for await (const [name,handle] of dir.entries())
+      if(handle.kind==="file" && name.startsWith("backup_") && name.endsWith(".json")) out.push({name,handle});
+  }catch(e){/* no backups dir yet */}
+  return out.sort((a,b)=>b.name.localeCompare(a.name));
+}
+
+/* --- 4.4 Browser mode (Safari / iPad / iPhone): localStorage is the
+       working copy; “Save a copy” hands the file to the Files app. --- */
+const LS_KEY="hsp_data", LS_BAK="hsp_backups";
+const store = {   // safe localStorage wrapper — some contexts block storage entirely
+  get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+  set(k,v){ localStorage.setItem(k,v); }
+};
+function saveToBrowser(){
+  try{
+    store.set(LS_KEY, JSON.stringify(State.data));
+    const baks = JSON.parse(store.get(LS_BAK)||"[]");
+    const last = baks[0];
+    if(!last || Date.now()-last.at > 10*60*1000){          // rolling backup at most every 10 min
+      baks.unshift({ at:Date.now(), data:JSON.stringify(State.data) });
+      baks.length = Math.min(baks.length, DEFAULTS.browserBackupsToKeep);
+      store.set(LS_BAK, JSON.stringify(baks));
+    }
+  }catch(e){ console.error(e); toast("Couldn't store changes in this browser: "+e.message, true); }
+}
+function loadFromBrowser(){
+  const raw = store.get(LS_KEY);
+  if(!raw) return false;
+  State.data = validateData(upgradeSchema(JSON.parse(raw)));
+  State.storage.mode = "browser";
+  State.dirty = false;
+  return true;
+}
+async function loadFromPickedFile(file){
+  const data = validateData(upgradeSchema(JSON.parse(await file.text())));
+  State.data = data;
+  if(State.storage.mode!=="folder") State.storage.mode = "browser";
+  State.dirty = true;                                     // so it gets written into this device's store
+  logActivity("Data file loaded", "Loaded “"+file.name+"” ("+fmtTime(new Date(file.lastModified).toISOString())+")");
+  saveNow(true);
+  State.ui.screen="home"; render();
+  toast("Loaded " + file.name);
+}
+
+/* --- 4.5 Save/load façade used by the rest of the app --- */
+async function saveNow(force){
+  if(!State.data || State.storage.saving) return;
+  if(!State.dirty && !force) return;
+  State.storage.saving = true; renderSaveStatus();
+  try{
+    if(State.storage.mode==="folder"){
+      const clash = await fileChangedOnDisk();
+      if(clash && !force){
+        State.storage.saving=false;
+        const reload = confirm("The data file on disk is newer than what this window loaded — it may have been saved from another device.\n\nOK = load the newer file (this window's unsaved edits are discarded)\nCancel = keep this window's version and overwrite the file");
+        if(reload){ await loadFromFolder(); render(); toast("Reloaded the newer file"); return; }
+      }
+      const text = JSON.stringify(State.data, null, 1);
+      const fh = await writeFolderFile(APP.dataFileName, text);
+      State.storage.loadedFileModified = (await fh.getFile()).lastModified;
+      await writeBackupAndPrune(text);
+    } else {
+      saveToBrowser();
+    }
+    State.dirty = false;
+    State.storage.lastSavedAt = nowISO();
+  }catch(e){ console.error(e); toast("Save failed: "+e.message, true); }
+  finally{ State.storage.saving = false; renderSaveStatus(); }
+}
+
+/* --- 4.6 Changed-on-disk protection (folder mode) --- */
+async function fileChangedOnDisk(){
+  try{
+    const fh = await State.storage.dirHandle.getFileHandle(APP.dataFileName);
+    const f = await fh.getFile();
+    return State.storage.loadedFileModified && f.lastModified > State.storage.loadedFileModified;
+  }catch(e){ return false; }
+}
+window.addEventListener("focus", async ()=>{
+  if(State.storage.mode==="folder" && State.data && await fileChangedOnDisk() && !State.dirty){
+    await loadFromFolder(); render(); toast("Picked up newer changes from the data file");
+  }
+});
+
+/* --- 4.7 Export & restore --- */
+function exportJSON(){
+  if(!State.data) return;
+  download("planner-data.json", JSON.stringify(State.data, null, 1));
+  logActivity("Exported data file"); scheduleSave();
+  toast(State.storage.mode==="browser"
+    ? "Choose “Save to Files” and put it in your planner folder"
+    : "Exported a copy of your data file");
+}
+async function restoreFromBackup(entry){
+  if(!confirm("Restore this backup from "+entry.label+"?\n\nYour current data will be replaced (a final backup of it is written first).")) return;
+  try{
+    const text = State.storage.mode==="folder"
+      ? await (await entry.handle.getFile()).text()
+      : entry.data;
+    if(State.storage.mode==="folder") await writeBackupAndPrune(JSON.stringify(State.data,null,1));
+    State.data = validateData(upgradeSchema(JSON.parse(text)));
+    logActivity("Restored from backup", entry.label);
+    State.dirty = true; await saveNow(true); render();
+    toast("Restored backup from "+entry.label);
+  }catch(e){ console.error(e); toast("Restore failed: "+e.message, true); }
+}
+/* ================================================================
+   SECTION 5 — FEATURES (people & school years)
+   Small functions that change State.data and call markDirty.
+   5.1 People   5.2 School years, breaks, terms, grades
+   ================================================================ */
+
+/* --- 5.1 People --- */
+function savePerson(p, isNew){
+  p.name = p.name.trim();
+  if(!p.name){ toast("Please give them a name", true); return false; }
+  if(isNew) State.data.people.push(p); else p.modifiedAt = nowISO();
+  markDirty(isNew?"Person added":"Person updated", p.name+" ("+p.role+(p.role==="student"?", "+p.status:"")+")");
+  return true;
+}
+function deletePerson(p){
+  if(!confirm("Remove "+p.name+"? This can't be undone (Stage 1 has no work attached to people yet, so nothing else is affected).")) return;
+  State.data.people = State.data.people.filter(x=>x.id!==p.id);
+  State.data.schoolYears.forEach(y=>{ delete y.studentGrades[p.id]; });
+  markDirty("Person removed", p.name);
+  render();
+}
+function students(){ return State.data.people.filter(p=>p.role==="student"); }
+
+/* --- 5.2 School years --- */
+function saveYear(y, isNew){
+  y.label = y.label.trim() || yearLabelFromDate(y.startDate);
+  if(!y.label){ toast("Please set a label or a start date", true); return false; }
+  if(!y.startDate || !y.endDate){ toast("Please set start and end dates", true); return false; }
+  if(y.endDate <= y.startDate){ toast("The end date must be after the start date", true); return false; }
+  if(!y.weekdayPattern.length){ toast("Pick at least one school day of the week", true); return false; }
+  if(isNew){ State.data.schoolYears.push(y);
+    if(!State.data.settings.activeSchoolYearId) State.data.settings.activeSchoolYearId = y.id; }
+  else y.modifiedAt = nowISO();
+  markDirty(isNew?"School year created":"School year updated", y.label+" · Cycle "+y.cycle+y.ttVariant);
+  return true;
+}
+function deleteYear(y){
+  if(!confirm("Delete the "+y.label+" school year? Breaks, terms and grade assignments in it are removed too.")) return;
+  State.data.schoolYears = State.data.schoolYears.filter(x=>x.id!==y.id);
+  if(State.data.settings.activeSchoolYearId===y.id)
+    State.data.settings.activeSchoolYearId = State.data.schoolYears[0]?.id || null;
+  markDirty("School year deleted", y.label);
+  State.ui.selectedYearId=null; render();
+}
+function addDateBlock(y, kind, name, start, end){       // kind: "breaks" | "terms"
+  name=(name||"").trim();
+  if(!name || !start || !end){ toast("Name, start and end are all needed", true); return false; }
+  if(end < start){ toast("The end date can't be before the start", true); return false; }
+  y[kind].push({ id:uid(), name, start, end });
+  y[kind].sort((a,b)=>a.start.localeCompare(b.start));
+  touchYear(y, (kind==="breaks"?"Break":"Term")+" added", name+" · "+y.label);
+  return true;
+}
+function removeDateBlock(y, kind, id){
+  const b=y[kind].find(x=>x.id===id);
+  y[kind]=y[kind].filter(x=>x.id!==id);
+  touchYear(y, (kind==="breaks"?"Break":"Term")+" removed", (b?b.name:"")+" · "+y.label);
+}
+function setGrade(y, personId, grade){
+  if(grade) y.studentGrades[personId]=grade; else delete y.studentGrades[personId];
+  const p=State.data.people.find(x=>x.id===personId);
+  touchYear(y, "Grade set", (p?p.name:"?")+" → "+(grade||"none")+" · "+y.label);
+}
+function touchYear(y, what, detail){ y.modifiedAt=nowISO(); markDirty(what, detail); }
+function activeYear(){ return State.data.schoolYears.find(y=>y.id===State.data.settings.activeSchoolYearId) || null; }
+
+/* ================================================================
+   SECTION 6 — UI
+   Renders everything from State. No data lives in the DOM.
+   6.1 Shell & save status   6.2 Setup screen   6.3 Home
+   6.4 People screen   6.5 School year screen   6.6 Data & backups
+   ================================================================ */
+
+const app = document.getElementById("app");
+
+/* --- 6.1 Shell --- */
+function render(){
+  clear(app);
+  app.append(el("header",{class:"bookplate"},
+    el("div",{class:"bp-row"},
+      el("div",{},
+        el("div",{class:"bp-title"},"Homeschool Planner")),
+      el("div",{class:"save-status",id:"saveStatus"}))));
+  renderSaveStatus();
+  if(!State.data){ app.append(renderSetup()); return; }
+  const tabs=[["home","Home"],["people","People"],["year","School Year"],["data","Data & Backups"]];
+  app.append(el("nav",{class:"tabs"},
+    tabs.map(([id,label])=>el("button",{class:State.ui.screen===id?"active":"", onclick:()=>{State.ui.screen=id;render();}},label))));
+  app.append({home:renderHome, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
+}
+function renderSaveStatus(){
+  const n=document.getElementById("saveStatus"); if(!n) return;
+  clear(n);
+  if(!State.data){ n.append(el("span",{},"No planner open")); return; }
+  const mode=State.storage.mode==="folder"?"Folder":"This device";
+  const txt=State.storage.saving?"Saving…":(State.dirty?"Unsaved changes":"Saved "+(State.storage.lastSavedAt?fmtTime(State.storage.lastSavedAt):"")); 
+  n.append(el("span",{class:"save-dot"+(State.dirty?" dirty":"")}), el("span",{}, mode+" · "+txt));
+}
+
+/* --- 6.2 Setup (first run / no data open) --- */
+function renderSetup(){
+  const wrap=el("div",{});
+  wrap.append(el("h2",{class:"screen-title"},"Welcome"),
+    el("p",{class:"screen-note"},"This planner lives in one folder you own — the app file, your data file, and automatic backups, side by side in iCloud Drive."));
+  if(folderCapable()){
+    const reconnectTop=el("div",{}); wrap.append(reconnectTop);
+    offerReconnect(reconnectTop);
+    wrap.append(el("div",{class:"card"},
+      el("h3",{},"Open your planner folder"),
+      el("p",{class:"screen-note"},"Pick the iCloud Drive folder this app file lives in. If there's a planner data file there, it loads; if not, a fresh one is created. The app then saves automatically as you work."),
+      el("button",{class:"btn secondary",onclick:chooseFolder},"Choose planner folder")));
+  } else {
+    wrap.append(el("div",{class:"notice"},"This browser can't write files directly (Safari, iPad and iPhone work this way). Your changes are kept safely in this browser, and you save a copy back to your iCloud folder with one tap on Data & Backups."),
+      el("div",{class:"card"},
+        el("h3",{},"Start fresh"),
+        el("p",{class:"screen-note"},"Create a new planner, kept in this browser until you save a copy to Files."),
+        el("button",{class:"btn",onclick:()=>{State.data=blankData();State.storage.mode="browser";logActivity("Planner created","New data file (browser mode)");State.dirty=true;saveNow(true);State.ui.screen="home";render();}},"Create new planner")),
+      el("div",{class:"card"},
+        el("h3",{},"Or load your data file"),
+        el("p",{class:"screen-note"},"Pick planner-data.json from your iCloud planner folder."),
+        filePickButton("Load planner-data.json")));
+  }
+  return wrap;
+}
+async function offerReconnect(container){
+  if(!folderCapable()) return;
+  const saved = await idb.get("dirHandle").catch(()=>null);
+  if(!saved) return;
+  container.append(el("div",{class:"card"},
+    el("h3",{},"Open your planner"),
+    el("p",{class:"screen-note"},"Your planner lives in “"+esc(saved.name)+"”. One click and you're in — the browser may show a permission prompt (a security rule for local files); if it offers “Allow on every visit,” choose that and this step becomes automatic."),
+    el("button",{class:"btn",onclick:async()=>{
+      if(await permissionOK(saved,true)){ State.storage.dirHandle=saved;
+        try{ await loadFromFolder(); State.ui.screen="home"; render(); toast("Reconnected to "+saved.name); }
+        catch(e){ toast("Couldn't load the data file: "+e.message,true); }
+      } else toast("Permission wasn't granted",true);
+    }},"Open “"+saved.name+"”")));
+}
+function filePickButton(label){
+  const inp=el("input",{type:"file",accept:".json,application/json",style:"display:none",
+    onchange:e=>{ const f=e.target.files[0]; if(f) loadFromPickedFile(f).catch(err=>toast("Couldn't load that file: "+err.message,true)); }});
+  return el("div",{}, inp, el("button",{class:"btn secondary",onclick:()=>inp.click()},label));
+}
+
+/* --- 6.3 Home --- */
+function renderHome(){
+  const d=State.data, y=activeYear();
+  const wrap=el("div",{});
+  wrap.append(el("h2",{class:"screen-title"},"Home"),
+    el("p",{class:"screen-note"},"Stage 1 lays the foundation: your family, the school year, and a data file that saves and backs itself up. Courses, imports and the daily view arrive in the next stages."));
+  const items=[
+    ["People", d.people.length? d.people.length+" added — "+d.people.map(p=>p.name).join(", ") : "none yet", "people", d.people.length>0],
+    ["School year", y? y.label+" · Cycle "+y.cycle+y.ttVariant+" · "+fmtDate(y.startDate)+" – "+fmtDate(y.endDate) : "none yet", "year", !!y],
+    ["Data & backups", State.storage.mode==="folder" ? "Saving automatically to your folder" : "Kept in this browser — save a copy to Files when you finish", "data", true]
+  ];
+  const card=el("div",{class:"card"}, el("h3",{},"Getting set up"));
+  items.forEach(([name,sub,screen,done])=>{
+    card.append(el("div",{class:"list-item"},
+      el("span",{class:"pill "+(done?"":"gold")},done?"Ready":"To do"),
+      el("div",{class:"li-main"}, el("div",{class:"li-name"},name), el("div",{class:"li-sub"},sub)),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.screen=screen;render();}},"Open")));
+  });
+  wrap.append(card);
+  wrap.append(el("div",{class:"card"},
+    el("h3",{},"Coming in the next stages"),
+    el("p",{class:"li-sub"},"Stage 2: courses, assignments and your taxonomy in use · Stage 3: scheduling · Stage 4: the iPad daily view · then the LHP import and enrollment wizards.")));
+  return wrap;
+}
+/* --- 6.4 People screen --- */
+function renderPeople(){
+  const wrap=el("div",{});
+  wrap.append(el("h2",{class:"screen-title"},"People"),
+    el("p",{class:"screen-note"},"Students and the parent participant. Each student carries a color, an enrollment status, and a grade level per school year (set on the School Year tab)."));
+  const list=el("div",{class:"card"});
+  if(!State.data.people.length) list.append(el("div",{class:"empty"},"No one here yet — add your family below."));
+  State.data.people.forEach(p=>{
+    const y=activeYear(); const grade=y?y.studentGrades[p.id]:null;
+    list.append(el("div",{class:"list-item"},
+      el("span",{class:"color-dot",style:"background:"+p.color}),
+      el("div",{class:"li-main"},
+        el("div",{class:"li-name"},p.name),
+        el("div",{class:"li-sub"},
+          p.role==="parent" ? "Parent" : "Student · "+p.status + (grade? " · "+grade+" ("+y.label+")" : ""))),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingPersonId=p.id;State.ui.personFormOpen=true;render();}},"Edit"),
+      el("button",{class:"btn danger small",onclick:()=>deletePerson(p)},"Remove")));
+  });
+  wrap.append(list);
+  if(State.ui.personFormOpen){
+    const editing = State.data.people.find(p=>p.id===State.ui.editingPersonId);
+    wrap.append(personForm(editing));
+  } else {
+    wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingPersonId=null;State.ui.personFormOpen=true;render();}},"Add a person"));
+  }
+  return wrap;
+}
+function personForm(existing){
+  const p = existing ? deepClone(existing) : newPerson();
+  const card=el("div",{class:"card"}, el("h3",{}, existing?"Edit "+existing.name:"Add a person"));
+  const nameIn=el("input",{type:"text",value:p.name,placeholder:"Name",oninput:e=>p.name=e.target.value});
+  const roleSel=el("select",{onchange:e=>{p.role=e.target.value;statusWrap.style.display=p.role==="student"?"":"none";}},
+    PERSON_ROLES.map(r=>el("option",{value:r,selected:p.role===r},r==="student"?"Student":"Parent")));
+  const statusSel=el("select",{onchange:e=>p.status=e.target.value},
+    STUDENT_STATUSES.map(s=>el("option",{value:s,selected:p.status===s},{enrolled:"Enrolled — records are written",'sit-in':"Sit-in — joins in, no records","future":"Future — not schooling yet"}[s])));
+  const statusWrap=el("label",{class:"field",style:p.role==="student"?"":"display:none"},"Enrollment status",statusSel);
+  const swatches=el("div",{class:"swatches"},
+    STUDENT_COLORS.map(c=>el("button",{class:"swatch"+(p.color===c?" sel":""),style:"background:"+c,"aria-label":"color "+c,
+      onclick:e=>{p.color=c;swatches.querySelectorAll(".swatch").forEach(s=>s.classList.remove("sel"));e.target.classList.add("sel");}})));
+  const notesIn=el("textarea",{placeholder:"Notes (optional)",oninput:e=>p.notes=e.target.value},p.notes);
+  card.append(el("div",{class:"stack"},
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"Name",nameIn),
+      el("label",{class:"field"},"Role",roleSel)),
+    statusWrap,
+    el("label",{class:"field"},"Color ",swatches),
+    el("label",{class:"field"},"Notes",notesIn),
+    el("div",{class:"row"},
+      el("button",{class:"btn",onclick:()=>{
+        if(existing){ Object.assign(existing,{name:p.name,role:p.role,status:p.status,color:p.color,notes:p.notes});
+          if(!savePerson(existing,false)) return; }
+        else if(!savePerson(p,true)) return;
+        State.ui.personFormOpen=false; State.ui.editingPersonId=null; render();
+      }}, existing?"Save changes":"Add person"),
+      el("button",{class:"btn quiet",onclick:()=>{State.ui.personFormOpen=false;State.ui.editingPersonId=null;render();}},"Cancel"))));
+  return card;
+}
+
+/* --- 6.5 School Year screen --- */
+function renderYears(){
+  const wrap=el("div",{});
+  wrap.append(el("h2",{class:"screen-title"},"School Year"),
+    el("p",{class:"screen-note"},"The year holds its dates, cycle and Together Time variant, the weekday pattern scheduling may use, target day count, breaks, optional terms, and each student's grade level. Your actual day count comes from completed work, per student — never from the pattern."));
+  State.data.schoolYears.forEach(y=>wrap.append(yearCard(y)));
+  if(!State.data.schoolYears.length && !State.ui.yearFormOpen)
+    wrap.append(el("div",{class:"card"},el("div",{class:"empty"},"No school year yet — create 2026–2027 below.")));
+  if(State.ui.yearFormOpen) wrap.append(yearForm());
+  else wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.yearFormOpen=true;render();}},"Create a school year"));
+  return wrap;
+}
+function yearForm(){
+  const y=newSchoolYear();
+  const card=el("div",{class:"card"},el("h3",{},"New school year"));
+  const labelIn=el("input",{type:"text",placeholder:"e.g. 2026–2027",oninput:e=>y.label=e.target.value});
+  const startIn=el("input",{type:"date",onchange:e=>{y.startDate=e.target.value; if(!labelIn.value){labelIn.value=yearLabelFromDate(y.startDate);y.label=labelIn.value;}}});
+  const endIn=el("input",{type:"date",onchange:e=>y.endDate=e.target.value});
+  const cycleSel=el("select",{onchange:e=>y.cycle=Number(e.target.value)},CYCLES.map(c=>el("option",{value:c,selected:y.cycle===c},"Cycle "+c)));
+  const varSel=el("select",{onchange:e=>y.ttVariant=e.target.value},TT_VARIANTS.map(v=>el("option",{value:v,selected:y.ttVariant===v},"Variant "+v+(v==="A"?" (first pass)":" (second pass)"))));
+  const targetIn=el("input",{type:"number",min:"1",value:y.targetDays,onchange:e=>y.targetDays=Number(e.target.value)||DEFAULTS.targetDays});
+  card.append(el("div",{class:"stack"},
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"Label",labelIn),
+      el("label",{class:"field"},"Target school days ",targetIn),
+      el("label",{class:"field"},"First day",startIn),
+      el("label",{class:"field"},"Last day",endIn),
+      el("label",{class:"field"},"Curriculum cycle",cycleSel),
+      el("label",{class:"field"},"Together Time variant",varSel)),
+    el("label",{class:"field"},"School days of the week ", el("span",{class:"hint"},"used only to place work on the calendar — skipping a day is always one tap later"), weekdayPicker(y)),
+    el("div",{class:"row"},
+      el("button",{class:"btn",onclick:()=>{ if(saveYear(y,true)){State.ui.yearFormOpen=false;State.ui.selectedYearId=y.id;render();} }},"Create year"),
+      el("button",{class:"btn quiet",onclick:()=>{State.ui.yearFormOpen=false;render();}},"Cancel"))));
+  return card;
+}
+function weekdayPicker(y){
+  const row=el("div",{class:"weekday-row"});
+  WEEKDAY_NAMES.forEach((name,i)=>{
+    const on=y.weekdayPattern.includes(i);
+    const lab=el("label",{class:on?"on":""},
+      el("input",{type:"checkbox",checked:on,onchange:e=>{
+        if(e.target.checked){ if(!y.weekdayPattern.includes(i)) y.weekdayPattern.push(i); lab.classList.add("on"); }
+        else { y.weekdayPattern=y.weekdayPattern.filter(d=>d!==i); lab.classList.remove("on"); }
+        y.weekdayPattern.sort();
+        if(y.id && State.data.schoolYears.some(x=>x.id===y.id)) touchYear(y,"Weekday pattern changed",y.label);
+      }}), name);
+    row.append(lab);
+  });
+  return row;
+}
+function yearCard(y){
+  const open = State.ui.selectedYearId===y.id;
+  const isActive = State.data.settings.activeSchoolYearId===y.id;
+  const card=el("div",{class:"card"});
+  card.append(el("div",{class:"spread"},
+    el("div",{},
+      el("div",{class:"row"},el("h3",{style:"margin:0"},y.label), isActive?el("span",{class:"pill"},"Active"):null, y.archived?el("span",{class:"pill gray"},"Archived"):null),
+      el("div",{class:"li-sub"},"Cycle "+y.cycle+" · Together Time "+y.cycle+y.ttVariant+" · "+fmtDate(y.startDate)+" – "+fmtDate(y.endDate)+" · target "+y.targetDays+" days")),
+    el("div",{class:"row"},
+      isActive?null:el("button",{class:"btn quiet small",onclick:()=>{State.data.settings.activeSchoolYearId=y.id;markDirty("Active year changed",y.label);render();}},"Make active"),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedYearId=open?null:y.id;render();}},open?"Close":"Details"))));
+  if(!open) return card;
+
+  /* details: dates & pattern */
+  const labelIn=el("input",{type:"text",value:y.label,onchange:e=>{const v=e.target.value.trim(); if(!v){toast("The label can't be empty",true);e.target.value=y.label;return;} y.label=v;touchYear(y,"School year renamed",v);render();}});
+  const startIn=el("input",{type:"date",value:y.startDate,onchange:e=>{y.startDate=e.target.value;touchYear(y,"School year updated",y.label);}});
+  const endIn=el("input",{type:"date",value:y.endDate,onchange:e=>{y.endDate=e.target.value;touchYear(y,"School year updated",y.label);}});
+  const targetIn=el("input",{type:"number",min:"1",value:y.targetDays,onchange:e=>{y.targetDays=Number(e.target.value)||y.targetDays;touchYear(y,"School year updated",y.label);}});
+  const cycleSel=el("select",{onchange:e=>{y.cycle=Number(e.target.value);touchYear(y,"School year updated",y.label);render();}},CYCLES.map(c=>el("option",{value:c,selected:y.cycle===c},"Cycle "+c)));
+  const varSel=el("select",{onchange:e=>{y.ttVariant=e.target.value;touchYear(y,"School year updated",y.label);render();}},TT_VARIANTS.map(v=>el("option",{value:v,selected:y.ttVariant===v},"Variant "+v)));
+  card.append(el("div",{class:"stack",style:"margin-top:10px"},
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"Label",labelIn),
+      el("label",{class:"field"},"First day",startIn),
+      el("label",{class:"field"},"Last day",endIn),
+      el("label",{class:"field"},"Curriculum cycle",cycleSel),
+      el("label",{class:"field"},"Together Time variant",varSel),
+      el("label",{class:"field"},"Target school days",targetIn)),
+    el("label",{class:"field"},"School days of the week",weekdayPicker(y)),
+    gradesEditor(y),
+    dateBlockEditor(y,"breaks","Breaks & vacations","e.g. Christmas Break"),
+    dateBlockEditor(y,"terms","Terms (optional)","e.g. Term 1"),
+    el("div",{class:"row"},
+      el("button",{class:"btn quiet small",onclick:()=>{y.archived=!y.archived;touchYear(y,y.archived?"Year archived":"Year unarchived",y.label);render();}},y.archived?"Unarchive":"Archive"),
+      el("button",{class:"btn danger small",onclick:()=>deleteYear(y)},"Delete year"))));
+  return card;
+}
+function gradesEditor(y){
+  const box=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:6px"},"Grade levels this year"));
+  if(!students().length) return box.append(el("div",{class:"li-sub"},"Add students on the People tab first.")),box;
+  const tbl=el("table",{class:"plain"});
+  students().forEach(s=>{
+    tbl.append(el("tr",{},
+      el("td",{style:"width:40%"},el("span",{class:"row"},el("span",{class:"color-dot",style:"background:"+s.color}),s.name)),
+      el("td",{},el("select",{onchange:e=>setGrade(y,s.id,e.target.value)},
+        el("option",{value:"",selected:!y.studentGrades[s.id]},"— not in this year —"),
+        GRADE_LEVELS.map(g=>el("option",{value:g,selected:y.studentGrades[s.id]===g},g))))));
+  });
+  box.append(tbl); return box;
+}
+function dateBlockEditor(y,kind,title,placeholder){
+  const box=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:6px"},title));
+  y[kind].forEach(b=>box.append(el("div",{class:"list-item"},
+    el("div",{class:"li-main"},el("div",{class:"li-name"},b.name),el("div",{class:"li-sub"},fmtDate(b.start)+" – "+fmtDate(b.end))),
+    el("button",{class:"btn danger small",onclick:()=>{removeDateBlock(y,kind,b.id);render();}},"Remove"))));
+  if(!y[kind].length) box.append(el("div",{class:"li-sub",style:"padding:4px 0 8px"},"None yet."));
+  const nameIn=el("input",{type:"text",placeholder}), sIn=el("input",{type:"date"}), eIn=el("input",{type:"date"});
+  box.append(el("div",{class:"row",style:"margin-top:6px"},
+    el("div",{style:"flex:2;min-width:140px"},nameIn),
+    el("div",{style:"flex:1;min-width:130px"},sIn),
+    el("div",{style:"flex:1;min-width:130px"},eIn),
+    el("button",{class:"btn secondary small",onclick:()=>{ if(addDateBlock(y,kind,nameIn.value,sIn.value,eIn.value)) render(); }},"Add")));
+  return box;
+}
+
+/* --- 6.6 Data & Backups screen --- */
+function renderData(){
+  const wrap=el("div",{});
+  wrap.append(el("h2",{class:"screen-title"},"Data & Backups"),
+    el("p",{class:"screen-note"},"Your records live in one JSON file you own. Backups are automatic; restore is one tap."));
+  const s=State.storage;
+  const info=el("div",{class:"card"},el("h3",{},"This device"));
+  info.append(
+    el("div",{class:"kv"},el("b",{},"Mode"),el("span",{}, s.mode==="folder" ? "Folder — saving automatically to “"+esc(s.dirHandle?.name||"?")+"”" : "Browser — changes kept on this device; save a copy to Files below")),
+    el("div",{class:"kv"},el("b",{},"Last saved"),el("span",{},s.lastSavedAt?fmtTime(s.lastSavedAt):"—")),
+    el("div",{class:"kv"},el("b",{},"Data file"),el("span",{class:"mono"},APP.dataFileName+" · schema v"+State.data.schemaVersion)),
+    el("div",{class:"row",style:"margin-top:10px"},
+      el("button",{class:"btn secondary small",onclick:()=>saveNow(true)},"Save now"),
+      el("button",{class:"btn secondary small",onclick:exportJSON}, s.mode==="browser"?"Save a copy to Files":"Export a copy"),
+      s.mode!=="folder"&&folderCapable()?el("button",{class:"btn quiet small",onclick:chooseFolder},"Switch to folder mode"):null));
+  wrap.append(info);
+
+  if(s.mode==="browser") wrap.append(el("div",{class:"notice warn"},"On iPad and iPhone: after tapping “Save a copy to Files”, choose Save to Files and pick your planner folder in iCloud Drive, replacing the old planner-data.json. Do this at the end of a working session, or whenever the dot up top is gold."));
+
+  const bak=el("div",{class:"card"},el("h3",{},"Backups"));
+  const listBox=el("div",{}); bak.append(listBox);
+  renderBackupList(listBox);
+  wrap.append(bak);
+
+  const load=el("div",{class:"card"},el("h3",{},"Load a data file"),
+    el("p",{class:"screen-note"},"Replace what's open with a planner-data.json or an exported copy — for moving between devices or recovering from an export."),
+    filePickButton("Load a file…"));
+  wrap.append(load);
+
+  const log=el("div",{class:"card"},el("h3",{},"Recent activity"));
+  const entries=State.data.activityLog.slice(0,40);
+  if(!entries.length) log.append(el("div",{class:"empty"},"Nothing yet."));
+  entries.forEach(a=>log.append(el("div",{class:"list-item"},
+    el("div",{class:"li-main"},el("div",{class:"li-name",style:"font-weight:500"},a.what),
+      a.detail?el("div",{class:"li-sub"},a.detail):null),
+    el("div",{class:"li-sub mono"},fmtTime(a.at)))));
+  wrap.append(log);
+  return wrap;
+}
+async function renderBackupList(box){
+  clear(box);
+  try{
+  if(State.storage.mode==="folder"){
+    const backups=await listFolderBackups();
+    if(!backups.length){ box.append(el("div",{class:"empty"},"No backups yet — one is written every time the app saves.")); return; }
+    box.append(el("p",{class:"li-sub",style:"margin-bottom:6px"},backups.length+" snapshots in backups/ (newest 30 kept, plus one per month)"));
+    backups.slice(0,12).forEach(b=>{
+      const label=b.name.replace("backup_","").replace(".json","").replace("_"," at ");
+      box.append(el("div",{class:"list-item"},
+        el("div",{class:"li-main mono"},label),
+        el("button",{class:"btn quiet small",onclick:()=>restoreFromBackup({handle:b.handle,label})},"Restore")));
+    });
+  } else {
+    const baks=JSON.parse(store.get(LS_BAK)||"[]");
+    if(!baks.length){ box.append(el("div",{class:"empty"},"No backups yet — rolling snapshots are kept on this device as you work.")); return; }
+    baks.forEach(b=>{
+      const label=fmtTime(new Date(b.at).toISOString());
+      box.append(el("div",{class:"list-item"},
+        el("div",{class:"li-main mono"},label),
+        el("button",{class:"btn quiet small",onclick:()=>restoreFromBackup({data:b.data,label})},"Restore")));
+    });
+  }
+  }catch(e){ box.append(el("div",{class:"empty"},"Backups couldn't be listed: "+e.message)); }
+}
+
+/* ================================================================
+   SECTION 7 — BOOT
+   Decide storage mode, restore what we can, first render.
+   ================================================================ */
+(async function boot(){
+  try{
+    if(folderCapable()){
+      const saved = await idb.get("dirHandle").catch(()=>null);
+      if(saved && await permissionOK(saved,false)){        // silent reconnect if already granted
+        State.storage.dirHandle=saved;
+        try{ await loadFromFolder(); }catch(e){ console.warn("Auto-load failed",e); State.data=null; }
+      }
+    } else {
+      try{ loadFromBrowser(); }catch(e){ console.warn("Browser data unreadable",e); State.data=null; }
+    }
+  } finally {
+    if(State.data && State.storage.mode) State.ui.screen="home"; 
+    render();
+  }
+})();
+window.addEventListener("beforeunload",e=>{ if(State.dirty){ saveNow(false); } });
+</script>
+</body>
+</html>
