@@ -143,7 +143,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.2.0", stage: "Stage 2 — Courses & Assignments", schemaVersion: 2, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.2.1", stage: "Stage 2 — Courses & Assignments", schemaVersion: 3, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -187,10 +187,6 @@ const COURSE_TYPES = [                       // v5 §5 Course.type
   ["family","Family — the whole family (Together Time, festivals)"]
 ];
 const COURSE_STATUSES = ["active","paused","completed","archived"];   // v5 §5
-const BATCH_MODES = [                        // repeating rules (v5 §5.3)
-  ["numbered","Numbered series — Chapter 4, Chapter 5, Chapter 6…"],
-  ["same","Same item repeated — e.g. one memory passage for six weeks"]
-];
 
 /* --- 1.4 Defaults --- */
 const DEFAULTS = {
@@ -265,7 +261,7 @@ const State = {
   },
   ui: { screen: "home", editingPersonId: null, yearFormOpen: false, selectedYearId: null, personFormOpen: false,
         selectedCourseId: null, courseFormOpen: false, editingCourseId: null,        // Stage 2
-        assignFormOpen: false, editingAssignId: null, batchFormOpen: false }
+        assignFormOpen: false, editingAssignId: null, quickAddOpen: false }
 };
 
 /* --- 3.2 Blank data file & entity factories --- */
@@ -307,7 +303,8 @@ function newAssignment(courseId){ const t=nowISO(); return { id:uid(), createdAt
   title:"", description:"", type:"Lesson",
   subjectOverride:"", focusOverride:"",   // inherit the course's labels unless set (v5)
   link:"", minutes:null, tags:[], notes:"",
-  narrationExpected:false, narrationPrompt:"" }; }
+  narrationExpected:false, narrationPrompt:"",
+  batchId:null, batchN:null }; }    // series membership: created-together assignments share a batchId; batchN is this row's number
 
 /* --- 3.3 Change tracking, autosave trigger & activity log --- */
 function logActivity(what, detail){
@@ -340,6 +337,9 @@ function upgradeSchema(data){
         if(!Array.isArray(data.taxonomy.assignmentTypes) || !data.taxonomy.assignmentTypes.length)
           data.taxonomy.assignmentTypes = [...TAXONOMY_STARTER.assignmentTypes];
         data.schemaVersion = 2; break;
+      case 2:  // v3: assignments carry series membership (batchId/batchN)
+        (data.assignments||[]).forEach(a=>{ if(!("batchId" in a)) a.batchId=null; if(!("batchN" in a)) a.batchN=null; });
+        data.schemaVersion = 3; break;
       default: data.schemaVersion = APP.schemaVersion;   // nothing to do
     }
   }
@@ -722,26 +722,71 @@ function effectiveLabels(a, c){                  // what the completion record w
   if(a.subjectOverride) return { subject:a.subjectOverride, focus:a.focusOverride||"" };
   return { subject:c.subject, focus:a.focusOverride||c.focus };
 }
-function addBatch(courseId, opts){               // repeating rules: generate assignments in bulk (v5 P0)
-  const count=Math.max(1, Math.min(500, Math.floor(opts.count)||0));
-  const pattern=(opts.title||"").trim();
-  if(!pattern){ toast("Please give the batch a title", true); return false; }
-  const start=Number.isFinite(opts.start)?Math.floor(opts.start):1;
+/* Repeating rules (v5 P0), now as “series”: assignments created together share a
+   batchId; batchN holds each row's number. {n} in a title becomes the number;
+   without {n}, every copy keeps the same title (memory-work style). */
+function seriesTitle(pattern, n){ return pattern.includes("{n}") ? pattern.replaceAll("{n}", n) : pattern; }
+function seriesMembers(batchId){ return State.data.assignments.filter(a=>a.batchId===batchId).sort((a,b)=>a.seq-b.seq); }
+function createSeries(courseId, tmpl, count, start){   // append `count` rows built from the form's template
+  count=Math.max(1, Math.min(500, Math.floor(count)||1));
+  const startN=Number.isFinite(start)?Math.floor(start):1;
+  const bid = count>1 ? uid() : null;
   let seq=courseAssignments(courseId).length;
   for(let i=0;i<count;i++){
-    const n=start+i;
     const a=newAssignment(courseId);
-    a.title = pattern.includes("{n}") ? pattern.replaceAll("{n}", n)
-            : (opts.mode==="numbered" && count>1 ? pattern+" "+n : pattern);
-    a.type=opts.type||"Lesson";
-    a.description=opts.description||"";
-    if(opts.narrationPrompt){ a.narrationPrompt=opts.narrationPrompt; a.narrationExpected=true; }
+    Object.assign(a,{ description:tmpl.description, type:tmpl.type,
+      subjectOverride:tmpl.subjectOverride, focusOverride:tmpl.focusOverride,
+      link:tmpl.link, minutes:tmpl.minutes, tags:[...tmpl.tags], notes:tmpl.notes,
+      narrationExpected:tmpl.narrationExpected, narrationPrompt:tmpl.narrationPrompt });
+    a.title=seriesTitle(tmpl.title, startN+i);
+    a.batchId=bid; a.batchN=bid?startN+i:null;
     a.seq=++seq;
     State.data.assignments.push(a);
   }
   const c=courseById(courseId);
-  markDirty("Assignments added in a batch", (c?c.name+" · ":"")+count+" × “"+pattern+"”");
+  markDirty(count>1?"Series of assignments added":"Assignment added",
+    (c?c.name+" · ":"")+(count>1?count+" × “"+tmpl.title+"”":tmpl.title));
+  return count;
+}
+function extendToSeries(a, more, start){         // make copies of an existing assignment, right after it
+  more=Math.max(1, Math.min(500, Math.floor(more)||1));
+  const startN=Number.isFinite(start)?Math.floor(start):2;
+  if(!a.batchId){ a.batchId=uid(); if(a.batchN==null) a.batchN=startN-1; }
+  for(let i=0;i<more;i++){
+    const copy=newAssignment(a.courseId);
+    Object.assign(copy,{ description:a.description, type:a.type,
+      subjectOverride:a.subjectOverride, focusOverride:a.focusOverride,
+      link:a.link, minutes:a.minutes, tags:[...a.tags], notes:a.notes,
+      narrationExpected:a.narrationExpected, narrationPrompt:a.narrationPrompt });
+    copy.title=seriesTitle(a.title, startN+i);
+    copy.batchId=a.batchId; copy.batchN=startN+i;
+    copy.seq=a.seq + (i+1)/(more+1);             // fractional — lands the copies right after the original…
+    State.data.assignments.push(copy);
+  }
+  resequence(a.courseId);                        // …then whole numbers are restored
+  const c=courseById(a.courseId);
+  markDirty("Assignment turned into a series", (c?c.name+" · ":"")+a.title+" +"+more);
+  return more;
+}
+function renameSeries(batchId, pattern){
+  pattern=(pattern||"").trim();
+  if(!pattern){ toast("Please type the new title — use {n} where the number goes", true); return false; }
+  const members=seriesMembers(batchId);
+  members.forEach(m=>{ m.title=seriesTitle(pattern, m.batchN!=null?m.batchN:""); m.modifiedAt=nowISO(); });
+  const c=members.length?courseById(members[0].courseId):null;
+  markDirty("Series renamed", (c?c.name+" · ":"")+members.length+" × “"+pattern+"”");
   return true;
+}
+function deleteSeries(batchId){
+  const members=seriesMembers(batchId);
+  if(!members.length) return;
+  if(!confirm("Delete all "+members.length+" assignments in this series? This can't be undone.")) return;
+  const courseId=members[0].courseId, c=courseById(courseId);
+  State.data.assignments=State.data.assignments.filter(a=>a.batchId!==batchId);
+  resequence(courseId);
+  State.ui.assignFormOpen=false; State.ui.editingAssignId=null;
+  markDirty("Series deleted", (c?c.name+" · ":"")+members.length+" assignments");
+  render();
 }
 
 /* ================================================================
@@ -888,12 +933,28 @@ function renderCourses(){
           el("div",{class:"li-sub"},subBits)),
         el("button",{class:"btn quiet small",disabled:i===0,onclick:()=>moveCourse(c,-1),"aria-label":"Move "+c.name+" up"},"↑"),
         el("button",{class:"btn quiet small",disabled:i===list.length-1,onclick:()=>moveCourse(c,1),"aria-label":"Move "+c.name+" down"},"↓"),
-        el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.batchFormOpen=false;State.ui.courseFormOpen=false;render();}},"Open")));
+        el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.quickAddOpen=false;State.ui.courseFormOpen=false;render();}},"Open")));
     });
     wrap.append(card);
   });
   if(State.ui.courseFormOpen && !State.ui.editingCourseId) wrap.append(courseForm(null));
-  else wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingCourseId=null;State.ui.courseFormOpen=true;render();}},"Add a course"));
+  else if(State.ui.quickAddOpen && total){
+    const card=el("div",{class:"card"},el("h3",{},"Add an assignment"),
+      el("p",{class:"screen-note"},"Every assignment lives in a course — that's where its labels, its place in the sequence, and (soon) its records come from. Pick the course and the form opens right there."));
+    const sel=el("select",{});
+    sel.append(el("option",{value:"",selected:true},"Choose a course…"));
+    tax().categories.forEach(cat=>coursesInCategory(cat.name).forEach(c=>
+      sel.append(el("option",{value:c.id},cat.name+" · "+c.name))));
+    sel.addEventListener("change",()=>{ if(!sel.value) return;
+      State.ui.selectedCourseId=sel.value; State.ui.quickAddOpen=false;
+      State.ui.assignFormOpen=true; State.ui.editingAssignId=null; State.ui.courseFormOpen=false; render(); });
+    card.append(el("div",{class:"stack"}, el("label",{class:"field"},"Course",sel),
+      el("div",{class:"row"},el("button",{class:"btn quiet",onclick:()=>{State.ui.quickAddOpen=false;render();}},"Cancel"))));
+    wrap.append(card);
+  }
+  else wrap.append(el("div",{class:"row"},
+    el("button",{class:"btn",onclick:()=>{State.ui.editingCourseId=null;State.ui.courseFormOpen=true;State.ui.quickAddOpen=false;render();}},"Add a course"),
+    total?el("button",{class:"btn secondary",onclick:()=>{State.ui.quickAddOpen=true;render();}},"Add an assignment…"):null));
   return wrap;
 }
 
@@ -931,17 +992,23 @@ function courseDetail(c){
   list.forEach((a,i)=>{
     const eff=effectiveLabels(a,c);
     const overridden = a.subjectOverride || a.focusOverride;
+    const subBits=[];
+    if(a.description) subBits.push(a.description);
+    if(a.narrationPrompt) subBits.push("Narration: “"+a.narrationPrompt+"”");
+    const sub=el("div",{class:"li-sub"});
+    subBits.forEach((t,k)=>{ if(k) sub.append(" · "); sub.append(t); });
+    if(a.link){ if(subBits.length) sub.append(" · "); sub.append(el("a",{href:a.link,target:"_blank",rel:"noopener"},"Open link ↗")); }
     card.append(el("div",{class:"list-item"},
       el("span",{class:"seq"},a.seq+"."),
       el("div",{class:"li-main"},
         el("div",{class:"row"},el("div",{class:"li-name"},a.title),
           a.type!=="Lesson"?el("span",{class:"pill gray"},a.type):null,
+          a.batchId?el("span",{class:"pill gray"},"series"):null,
           overridden?el("span",{class:"pill gold"},eff.subject+(eff.focus?" → "+eff.focus:"")):null),
-        (a.description||a.narrationPrompt)?el("div",{class:"li-sub"},
-          [a.description, a.narrationPrompt?"Narration: “"+a.narrationPrompt+"”":null].filter(Boolean).join(" · ")):null),
+        (subBits.length||a.link)?sub:null),
       el("button",{class:"btn quiet small",disabled:i===0,onclick:()=>moveAssignment(a,-1),"aria-label":"Move up"},"↑"),
       el("button",{class:"btn quiet small",disabled:i===list.length-1,onclick:()=>moveAssignment(a,1),"aria-label":"Move down"},"↓"),
-      el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingAssignId=a.id;State.ui.assignFormOpen=true;State.ui.batchFormOpen=false;render();}},"Edit"),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingAssignId=a.id;State.ui.assignFormOpen=true;render();}},"Edit"),
       el("button",{class:"btn danger small",onclick:()=>deleteAssignment(a)},"Delete")));
   });
   wrap.append(card);
@@ -949,52 +1016,73 @@ function courseDetail(c){
   if(State.ui.assignFormOpen){
     const editing=State.data.assignments.find(a=>a.id===State.ui.editingAssignId);
     wrap.append(assignmentForm(c, editing||null));
-  } else if(State.ui.batchFormOpen){
-    wrap.append(batchForm(c));
   } else {
-    wrap.append(el("div",{class:"row"},
-      el("button",{class:"btn",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add an assignment"),
-      el("button",{class:"btn secondary",onclick:()=>{State.ui.batchFormOpen=true;render();}},"Add a batch (repeating)")));
+    wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add assignments"));
   }
   return wrap;
 }
 
 /* Subject/Focus pickers with create-new-inline (v5: “searchable dropdowns
-   with create-new-inline everywhere”) */
+   with create-new-inline everywhere”). Choosing “＋ Add new…” swaps in a
+   small name box right here — no pop-up dialogs — and the new entry is
+   selected and confirmed with a toast the moment it's added. */
 function subjectFocusPickers(obj, subjKey, focusKey, inheritCourse){
   const NEW="__new__";
-  const subjSel=el("select",{}), focusSel=el("select",{});
-  function fillSubjects(){
-    clear(subjSel);
-    subjSel.append(el("option",{value:"",selected:!obj[subjKey]},
+  const subjWrap=el("div",{}), focusWrap=el("div",{});
+  function inlineAdder(placeholder, onAdd, onCancel){
+    const inp=el("input",{type:"text",placeholder});
+    const row=el("div",{class:"row",style:"margin-top:6px"},
+      el("div",{style:"flex:1;min-width:150px"},inp),
+      el("button",{class:"btn secondary small",onclick:()=>onAdd(inp.value)},"Add"),
+      el("button",{class:"btn quiet small",onclick:onCancel},"Cancel"));
+    setTimeout(()=>inp.focus(),0);
+    return row;
+  }
+  function buildSubj(){
+    clear(subjWrap);
+    const sel=el("select",{});
+    sel.append(el("option",{value:"",selected:!obj[subjKey]},
       inheritCourse ? "Inherit from course"+(inheritCourse.subject?" ("+inheritCourse.subject+")":"") : "— no subject —"));
-    tax().subjects.forEach(s=>subjSel.append(el("option",{value:s.name,selected:obj[subjKey]===s.name},s.name)));
-    subjSel.append(el("option",{value:NEW},"＋ Add a new subject…"));
+    tax().subjects.forEach(s=>sel.append(el("option",{value:s.name,selected:obj[subjKey]===s.name},s.name)));
+    sel.append(el("option",{value:NEW},"＋ Add a subject not in this list…"));
+    sel.addEventListener("change",()=>{
+      if(sel.value===NEW){
+        subjWrap.append(inlineAdder("New subject name (e.g. Logic)",
+          val=>{ const name=addTaxSubject(val);
+            if(!name){ toast("Please type a name for the new subject", true); return; }
+            obj[subjKey]=name; obj[focusKey]="";
+            toast("“"+name+"” added to your Subjects — it's available on every course and assignment now");
+            buildSubj(); buildFocus(); },
+          ()=>{ buildSubj(); }));
+        sel.disabled=true;
+      } else { obj[subjKey]=sel.value; obj[focusKey]=""; buildFocus(); }
+    });
+    subjWrap.append(sel);
   }
-  function fillFocuses(){
-    clear(focusSel);
+  function buildFocus(){
+    clear(focusWrap);
+    const sel=el("select",{});
     const effSubj = obj[subjKey] || (inheritCourse ? inheritCourse.subject : "");
-    focusSel.append(el("option",{value:"",selected:!obj[focusKey]},
+    sel.append(el("option",{value:"",selected:!obj[focusKey]},
       inheritCourse && !obj[subjKey] ? "Inherit from course"+(inheritCourse.focus?" ("+inheritCourse.focus+")":"") : "— no focus —"));
-    focusesFor(effSubj).forEach(f=>focusSel.append(el("option",{value:f,selected:obj[focusKey]===f},f)));
-    if(effSubj) focusSel.append(el("option",{value:NEW},"＋ Add a new focus…"));
+    focusesFor(effSubj).forEach(f=>sel.append(el("option",{value:f,selected:obj[focusKey]===f},f)));
+    if(effSubj) sel.append(el("option",{value:NEW},"＋ Add a focus not in this list…"));
+    sel.addEventListener("change",()=>{
+      if(sel.value===NEW){
+        focusWrap.append(inlineAdder("New focus under "+effSubj,
+          val=>{ const name=addTaxFocus(effSubj, val);
+            if(!name){ toast("Please type a name for the new focus", true); return; }
+            obj[focusKey]=name;
+            toast("“"+name+"” added under "+effSubj);
+            buildFocus(); },
+          ()=>{ buildFocus(); }));
+        sel.disabled=true;
+      } else obj[focusKey]=sel.value;
+    });
+    focusWrap.append(sel);
   }
-  subjSel.addEventListener("change",()=>{
-    if(subjSel.value===NEW){
-      const name=addTaxSubject(prompt("Name the new subject (e.g. Logic):"));
-      obj[subjKey]=name||""; fillSubjects();
-    } else obj[subjKey]=subjSel.value;
-    obj[focusKey]=""; fillFocuses();
-  });
-  focusSel.addEventListener("change",()=>{
-    const effSubj = obj[subjKey] || (inheritCourse ? inheritCourse.subject : "");
-    if(focusSel.value===NEW){
-      const name=addTaxFocus(effSubj, prompt("Name the new focus under "+effSubj+":"));
-      obj[focusKey]=name||""; fillFocuses();
-    } else obj[focusKey]=focusSel.value;
-  });
-  fillSubjects(); fillFocuses();
-  return { subjSel, focusSel };
+  buildSubj(); buildFocus();
+  return { subjSel:subjWrap, focusSel:focusWrap };
 }
 
 function courseForm(existing){
@@ -1066,9 +1154,11 @@ function courseForm(existing){
 
 function assignmentForm(course, existing){
   const a = existing ? deepClone(existing) : newAssignment(course.id);
-  const card=el("div",{class:"card"}, el("h3",{}, existing?"Edit assignment #"+existing.seq:"Add an assignment"),
-    existing?null:el("p",{class:"screen-note"},"It lands at the end of the sequence — slide it into place with the arrows. Labels inherit from the course; no classification needed."));
-  const titleIn=el("input",{type:"text",value:a.title,placeholder:"e.g. Little House in the Big Woods, Ch. 1",oninput:e=>a.title=e.target.value});
+  const series = existing && existing.batchId ? seriesMembers(existing.batchId) : [];
+  const rep={ count:1, start:1, more:5, copyStart:2 };
+  const card=el("div",{class:"card"}, el("h3",{}, existing?"Edit assignment #"+existing.seq:"Add assignments"),
+    existing?null:el("p",{class:"screen-note"},"One assignment or a whole series from this single form — set “How many” below. New work lands at the end of the sequence; slide it into place with the arrows. Labels inherit from the course."));
+  const titleIn=el("input",{type:"text",value:a.title,placeholder:"e.g. Little House in the Big Woods, Ch. 1 — or Chapter {n}",oninput:e=>a.title=e.target.value});
   const typeSel=el("select",{onchange:e=>a.type=e.target.value},
     tax().assignmentTypes.map(t=>el("option",{value:t,selected:a.type===t},t)));
   const descIn=el("textarea",{placeholder:"Description (optional)",oninput:e=>a.description=e.target.value},a.description);
@@ -1081,10 +1171,53 @@ function assignmentForm(course, existing){
   const tagsIn=el("input",{type:"text",value:a.tags.join(", "),placeholder:"comma, separated, tags",
     oninput:e=>a.tags=e.target.value.split(",").map(s=>s.trim()).filter(Boolean)});
   const notesIn=el("textarea",{placeholder:"Notes (optional)",oninput:e=>a.notes=e.target.value},a.notes);
+
+  /* “How many” — the repeating rule lives inside the one form (new assignments only) */
+  const startWrap=el("label",{class:"field",style:"display:none"},"Start numbering at",
+    el("input",{type:"number",value:rep.start,onchange:e=>rep.start=Number(e.target.value)}));
+  const countHint=el("p",{class:"li-sub",style:"display:none"},"Write {n} in the title where the number should go — “Chapter {n}” starting at 4 becomes Chapter 4, Chapter 5… Without {n}, every copy keeps the same title (one memory passage for six weeks).");
+  const countIn=el("input",{type:"number",min:"1",max:"500",value:rep.count,onchange:e=>{
+    rep.count=Number(e.target.value)||1;
+    const many=rep.count>1;
+    startWrap.style.display=many?"":"none"; countHint.style.display=many?"":"none";
+  }});
+
+  /* Series tools (editing only) */
+  let seriesBox=null;
+  if(existing){
+    seriesBox=el("div",{class:"stack",style:"margin-top:10px"});
+    if(series.length>1){
+      const patIn=el("input",{type:"text",placeholder:"New title for all — use {n} for the number, e.g. Lesson {n}"});
+      seriesBox.append(
+        el("p",{class:"li-sub"},"This is one of "+series.length+" in a series (made together). These act on all "+series.length+":"),
+        el("div",{class:"row"},
+          el("div",{style:"flex:2;min-width:180px"},patIn),
+          el("button",{class:"btn secondary small",onclick:()=>{ if(renameSeries(existing.batchId,patIn.value)){ State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render(); toast(series.length+" assignments renamed"); } }},"Rename all"),
+          el("button",{class:"btn danger small",onclick:()=>deleteSeries(existing.batchId)},"Delete all "+series.length)));
+    }
+    const moreIn=el("input",{type:"number",min:"1",max:"500",value:rep.more,onchange:e=>rep.more=Number(e.target.value)||1});
+    const cStartIn=el("input",{type:"number",value:rep.copyStart,onchange:e=>rep.copyStart=Number(e.target.value)});
+    seriesBox.append(el("details",{class:"adv"},
+      el("summary",{},"Turn into a series / make more copies"),
+      el("div",{class:"stack",style:"margin-top:10px"},
+        el("p",{class:"li-sub"},"Copies of this assignment (all its fields) land right after it in the sequence. If the title contains {n}, copies are numbered from the start value; otherwise they keep the same title. Save any edits first — copies are made from the saved version."),
+        el("div",{class:"grid2"},
+          el("label",{class:"field"},"How many copies",moreIn),
+          el("label",{class:"field"},"Number copies starting at",cStartIn)),
+        el("div",{class:"row"},el("button",{class:"btn secondary small",onclick:()=>{
+          const n=extendToSeries(existing, rep.more, rep.copyStart);
+          State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render();
+          toast(n+" copies added after #"+existing.seq);
+        }},"Create the copies")))));
+  }
+
   card.append(el("div",{class:"stack"},
     el("div",{class:"grid2"},
       el("label",{class:"field"},"Title",titleIn),
-      el("label",{class:"field"},"Type",typeSel)),
+      el("label",{class:"field"},"Type",typeSel),
+      existing?null:el("label",{class:"field"},"How many ",el("span",{class:"hint"},"more than 1 makes a series"),countIn),
+      existing?null:startWrap),
+    existing?null:countHint,
     el("label",{class:"field"},"Description",descIn),
     el("div",{class:"grid2"},
       el("label",{class:"field"},"Narration prompt ",el("span",{class:"hint"},"the question you'll ask"),promptIn),
@@ -1100,45 +1233,22 @@ function assignmentForm(course, existing){
           el("label",{class:"field"},"Time estimate (minutes)",minIn),
           el("label",{class:"field"},"Tags",tagsIn)),
         el("label",{class:"field"},"Notes",notesIn))),
+    seriesBox,
     el("div",{class:"row"},
       el("button",{class:"btn",onclick:()=>{
         if(existing){ Object.assign(existing,{title:a.title,description:a.description,type:a.type,
             subjectOverride:a.subjectOverride,focusOverride:a.focusOverride,link:a.link,minutes:a.minutes,
             tags:[...a.tags],notes:a.notes,narrationExpected:a.narrationExpected,narrationPrompt:a.narrationPrompt});
           if(!saveAssignment(existing,false)) return; }
-        else if(!saveAssignment(a,true)) return;
+        else {
+          a.title=a.title.trim();
+          if(!a.title){ toast("Please give it a title", true); return; }
+          const n=createSeries(course.id, a, rep.count, rep.start);
+          if(n>1) toast(n+" assignments added");
+        }
         State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render();
-      }}, existing?"Save changes":"Add assignment"),
+      }}, existing?"Save changes":"Add"),
       el("button",{class:"btn quiet",onclick:()=>{State.ui.assignFormOpen=false;State.ui.editingAssignId=null;render();}},"Cancel"))));
-  return card;
-}
-
-function batchForm(course){
-  const opts={ count:5, title:"", start:1, mode:"numbered", type:"Lesson", description:"", narrationPrompt:"" };
-  const card=el("div",{class:"card"}, el("h3",{},"Add a batch — repeating rules"),
-    el("p",{class:"screen-note"},"Make many assignments at once: a chapter per day, one catechism question a week, or the same memory work for six weeks. Write {n} in the title where the number should go — “Chapter {n}” becomes Chapter 4, Chapter 5, and so on."));
-  const titleIn=el("input",{type:"text",placeholder:"e.g. Chapter {n} — or: Psalm 23 memory work",oninput:e=>opts.title=e.target.value});
-  const countIn=el("input",{type:"number",min:"1",max:"500",value:opts.count,onchange:e=>opts.count=Number(e.target.value)||1});
-  const startIn=el("input",{type:"number",value:opts.start,onchange:e=>opts.start=Number(e.target.value)});
-  const modeSel=el("select",{onchange:e=>opts.mode=e.target.value},
-    BATCH_MODES.map(([v,label])=>el("option",{value:v,selected:opts.mode===v},label)));
-  const typeSel=el("select",{onchange:e=>opts.type=e.target.value},
-    tax().assignmentTypes.map(t=>el("option",{value:t,selected:opts.type===t},t)));
-  const promptIn=el("input",{type:"text",placeholder:"Applied to every one (optional)",oninput:e=>opts.narrationPrompt=e.target.value});
-  const descIn=el("textarea",{placeholder:"Description applied to every one (optional)",oninput:e=>opts.description=e.target.value});
-  card.append(el("div",{class:"stack"},
-    el("label",{class:"field"},"Title pattern",titleIn),
-    el("div",{class:"grid2"},
-      el("label",{class:"field"},"How many",countIn),
-      el("label",{class:"field"},"Start numbering at",startIn),
-      el("label",{class:"field"},"Pattern",modeSel),
-      el("label",{class:"field"},"Type",typeSel)),
-    el("div",{class:"grid2"},
-      el("label",{class:"field"},"Narration prompt",promptIn),
-      el("label",{class:"field"},"Description",descIn)),
-    el("div",{class:"row"},
-      el("button",{class:"btn",onclick:()=>{ if(addBatch(course.id,opts)){ State.ui.batchFormOpen=false; render(); toast(Math.max(1,Math.min(500,Math.floor(opts.count)||1))+" assignments added"); } }},"Create the batch"),
-      el("button",{class:"btn quiet",onclick:()=>{State.ui.batchFormOpen=false;render();}},"Cancel"))));
   return card;
 }
 
