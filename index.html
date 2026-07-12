@@ -124,6 +124,7 @@ table.plain th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;colo
 .weekday-row label.on{background:var(--spruce-soft);border-color:var(--spruce);color:var(--spruce-dark)}
 .weekday-row input{position:absolute;opacity:0}
 details.adv{margin-top:8px}
+.seq{font-family:var(--font-mono);font-size:13px;color:var(--muted);min-width:30px;text-align:right;flex:none}
 .app-footer{text-align:center;color:var(--muted);font-size:12px;font-family:var(--font-mono);padding:26px 0 4px;letter-spacing:.04em}
 details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight:600}
 </style>
@@ -142,7 +143,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.1.4", stage: "Stage 1 — Foundation", schemaVersion: 1, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.2.0", stage: "Stage 2 — Courses & Assignments", schemaVersion: 2, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -180,6 +181,16 @@ const PERSON_ROLES = ["student","parent"];
 const STUDENT_STATUSES = ["enrolled","sit-in","future"];
 const WEEKDAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 const STUDENT_COLORS = ["#3D5A49","#A4553F","#B8892F","#4A6FA5","#7B5AA6","#3E8E7E","#8A4E67","#5C6B3C"];
+const COURSE_TYPES = [                       // v5 §5 Course.type
+  ["individual","Individual — one student's own work"],
+  ["group","Group — several students, checked off once for all"],
+  ["family","Family — the whole family (Together Time, festivals)"]
+];
+const COURSE_STATUSES = ["active","paused","completed","archived"];   // v5 §5
+const BATCH_MODES = [                        // repeating rules (v5 §5.3)
+  ["numbered","Numbered series — Chapter 4, Chapter 5, Chapter 6…"],
+  ["same","Same item repeated — e.g. one memory passage for six weeks"]
+];
 
 /* --- 1.4 Defaults --- */
 const DEFAULTS = {
@@ -252,7 +263,9 @@ const State = {
     lastSavedAt: null,
     saving: false
   },
-  ui: { screen: "home", editingPersonId: null, yearFormOpen: false, selectedYearId: null, personFormOpen: false }
+  ui: { screen: "home", editingPersonId: null, yearFormOpen: false, selectedYearId: null, personFormOpen: false,
+        selectedCourseId: null, courseFormOpen: false, editingCourseId: null,        // Stage 2
+        assignFormOpen: false, editingAssignId: null, batchFormOpen: false }
 };
 
 /* --- 3.2 Blank data file & entity factories --- */
@@ -274,6 +287,27 @@ function newPerson(){ const t=nowISO(); return { id:uid(), createdAt:t, modified
 function newSchoolYear(){ const t=nowISO(); return { id:uid(), createdAt:t, modifiedAt:t,
   label:"", startDate:"", endDate:"", cycle:1, ttVariant:"A", targetDays:DEFAULTS.targetDays,
   weekdayPattern:[...DEFAULTS.weekdayPattern], terms:[], breaks:[], studentGrades:{}, archived:false }; }
+function newCourse(){ const t=nowISO(); return { id:uid(), createdAt:t, modifiedAt:t,
+  name:"", category:"Ordinary Days", subject:"", focus:"",       // three-level taxonomy labels (v5 §3a)
+  cycle:null,                       // 1–4 or null (Kindergarten & custom courses carry none)
+  role:"working",                   // "master" | "working" (v5) — manual courses are working courses; masters arrive with the importer
+  bundle:null,                      // masters only (v5) — unused until the import stages
+  type:"individual",                // "individual" | "group" | "family"
+  studentIds:[],                    // working courses; empty for family courses
+  parentLed:false,
+  source:"custom",                  // e.g. "LHP Cycle 1 Basic — 1st Grade" once imports exist
+  yearId: State.data?.settings.activeSchoolYearId || null,
+  cadence:null,                     // times per week (scheduling uses this in Stage 3)
+  lessonMinutes:null,               // typical lesson length
+  links:[],                         // resource links (one URL per line in the form)
+  notes:"", sortPos:0,              // manual sort order within its category (v5, P1 groundwork)
+  status:"active" }; }
+function newAssignment(courseId){ const t=nowISO(); return { id:uid(), createdAt:t, modifiedAt:t,
+  courseId, seq:0,                  // teaching order — independent of calendar dates (plan/schedule separation)
+  title:"", description:"", type:"Lesson",
+  subjectOverride:"", focusOverride:"",   // inherit the course's labels unless set (v5)
+  link:"", minutes:null, tags:[], notes:"",
+  narrationExpected:false, narrationPrompt:"" }; }
 
 /* --- 3.3 Change tracking, autosave trigger & activity log --- */
 function logActivity(what, detail){
@@ -293,7 +327,22 @@ function markDirty(what, detail){
        upgrades older files on load so later field additions are routine. --- */
 function upgradeSchema(data){
   if(typeof data.schemaVersion !== "number") throw new Error("Not a planner data file");
-  // while(data.schemaVersion < APP.schemaVersion){ switch(data.schemaVersion){ case 1: /* add fields */ data.schemaVersion=2; break; } }
+  while(data.schemaVersion < APP.schemaVersion){
+    switch(data.schemaVersion){
+      case 1:  // v2: courses & assignments in use. Stage 1 files already carry the
+               // empty collections; this defensively fills anything missing.
+        data.courses = data.courses || [];
+        data.assignments = data.assignments || [];
+        data.instances = data.instances || [];
+        data.completions = data.completions || [];
+        data.books = data.books || [];
+        data.taxonomy = data.taxonomy || deepClone(TAXONOMY_STARTER);
+        if(!Array.isArray(data.taxonomy.assignmentTypes) || !data.taxonomy.assignmentTypes.length)
+          data.taxonomy.assignmentTypes = [...TAXONOMY_STARTER.assignmentTypes];
+        data.schemaVersion = 2; break;
+      default: data.schemaVersion = APP.schemaVersion;   // nothing to do
+    }
+  }
   return data;
 }
 function validateData(data){
@@ -490,6 +539,12 @@ function exportJSON(){
     ? "Choose “Save to Files” and put it in your planner folder"
     : "Exported a copy of your data file");
 }
+function exportDatedBackup(){   // browser mode's manual mirror of the Mac's automatic snapshots
+  if(!State.data) return;
+  download("backup_" + stamp() + ".json", JSON.stringify(State.data, null, 1));
+  logActivity("Dated backup exported"); scheduleSave();
+  toast("Choose “Save to Files” and drop it into your backups/ folder");
+}
 async function restoreFromBackup(entry){
   if(!confirm("Restore this backup from "+entry.label+"?\n\nYour current data will be replaced (a final backup of it is written first).")) return;
   try{
@@ -504,9 +559,10 @@ async function restoreFromBackup(entry){
   }catch(e){ console.error(e); toast("Restore failed: "+e.message, true); }
 }
 /* ================================================================
-   SECTION 5 — FEATURES (people & school years)
+   SECTION 5 — FEATURES (people, school years, courses, assignments)
    Small functions that change State.data and call markDirty.
    5.1 People   5.2 School years, breaks, terms, grades
+   5.3 Taxonomy helpers   5.4 Courses   5.5 Assignments & repeating rules
    ================================================================ */
 
 /* --- 5.1 People --- */
@@ -518,9 +574,11 @@ function savePerson(p, isNew){
   return true;
 }
 function deletePerson(p){
-  if(!confirm("Remove "+p.name+"? This can't be undone (Stage 1 has no work attached to people yet, so nothing else is affected).")) return;
+  const inCourses=State.data.courses.filter(c=>c.studentIds.includes(p.id)).length;
+  if(!confirm("Remove "+p.name+"? This can't be undone."+(inCourses?"\n\nThey are on "+inCourses+" course"+(inCourses===1?"":"s")+" — they'll be taken off those lists (the courses themselves stay).":""))) return;
   State.data.people = State.data.people.filter(x=>x.id!==p.id);
   State.data.schoolYears.forEach(y=>{ delete y.studentGrades[p.id]; });
+  State.data.courses.forEach(c=>{ c.studentIds=c.studentIds.filter(id=>id!==p.id); });
   markDirty("Person removed", p.name);
   render();
 }
@@ -569,11 +627,129 @@ function setGrade(y, personId, grade){
 function touchYear(y, what, detail){ y.modifiedAt=nowISO(); markDirty(what, detail); }
 function activeYear(){ return State.data.schoolYears.find(y=>y.id===State.data.settings.activeSchoolYearId) || null; }
 
+/* --- 5.3 Taxonomy helpers (reads/writes the data file's editable copy) --- */
+function tax(){ return State.data.taxonomy; }
+function taxSubject(name){ return tax().subjects.find(s=>s.name===name) || null; }
+function focusesFor(subjectName){ const s=taxSubject(subjectName); return s ? s.focuses : []; }
+function addTaxSubject(name){
+  name=(name||"").trim();
+  if(!name) return null;
+  const dup=taxSubject(name); if(dup) return dup.name;
+  tax().subjects.push({ name, dept:"", focuses:[] });   // transcript dept editable later in the Category Manager (P1)
+  markDirty("Subject added", name);
+  return name;
+}
+function addTaxFocus(subjectName, name){
+  name=(name||"").trim();
+  const s=taxSubject(subjectName);
+  if(!s || !name) return null;
+  if(!s.focuses.includes(name)){ s.focuses.push(name); markDirty("Focus added", subjectName+" → "+name); }
+  return name;
+}
+
+/* --- 5.4 Courses --- */
+function coursesInCategory(cat){
+  return State.data.courses.filter(c=>c.category===cat)
+    .sort((a,b)=>(a.sortPos-b.sortPos)||a.name.localeCompare(b.name));
+}
+function courseById(id){ return State.data.courses.find(c=>c.id===id) || null; }
+function saveCourse(c, isNew){
+  c.name=c.name.trim();
+  if(!c.name){ toast("Please give the course a name", true); return false; }
+  if(!c.category){ toast("Please pick a category", true); return false; }
+  if(c.type==="family") c.studentIds=[];
+  if(isNew){
+    c.sortPos = Math.max(0, ...coursesInCategory(c.category).map(x=>x.sortPos)) + 1;
+    State.data.courses.push(c);
+  } else c.modifiedAt=nowISO();
+  markDirty(isNew?"Course added":"Course updated", c.name+" ("+c.category+(c.subject?" · "+c.subject:"")+")");
+  return true;
+}
+function deleteCourse(c){
+  const n=courseAssignments(c.id).length;
+  if(!confirm("Delete “"+c.name+"”"+(n?" and its "+n+" assignment"+(n===1?"":"s"):"")+"? This can't be undone.")) return;
+  State.data.assignments = State.data.assignments.filter(a=>a.courseId!==c.id);
+  State.data.courses = State.data.courses.filter(x=>x.id!==c.id);
+  if(State.ui.selectedCourseId===c.id) State.ui.selectedCourseId=null;
+  markDirty("Course deleted", c.name+(n?" (with "+n+" assignments)":""));
+  render();
+}
+function moveCourse(c, dir){                    // manual sort order within a category (v5, P1 groundwork)
+  const list=coursesInCategory(c.category);
+  list.forEach((x,i)=>x.sortPos=i+1);           // normalize first
+  const i=list.indexOf(c), j=i+dir;
+  if(j<0 || j>=list.length) return;
+  [list[i].sortPos, list[j].sortPos] = [list[j].sortPos, list[i].sortPos];
+  markDirty();                                   // stamps modified without flooding the activity log
+  render();
+}
+function courseStudents(c){
+  return c.type==="family" ? [] : students().filter(s=>c.studentIds.includes(s.id));
+}
+
+/* --- 5.5 Assignments & repeating rules --- */
+function courseAssignments(courseId){
+  return State.data.assignments.filter(a=>a.courseId===courseId).sort((a,b)=>a.seq-b.seq);
+}
+function resequence(courseId){ courseAssignments(courseId).forEach((a,i)=>a.seq=i+1); }
+function saveAssignment(a, isNew){
+  a.title=a.title.trim();
+  if(!a.title){ toast("Please give the assignment a title", true); return false; }
+  if(a.subjectOverride==="") a.focusOverride=a.focusOverride||"";   // focus-only overrides are allowed
+  if(isNew){ a.seq = courseAssignments(a.courseId).length + 1; State.data.assignments.push(a); }
+  else a.modifiedAt=nowISO();
+  const c=courseById(a.courseId);
+  markDirty(isNew?"Assignment added":"Assignment updated", (c?c.name+" · ":"")+"#"+a.seq+" "+a.title);
+  return true;
+}
+function deleteAssignment(a){
+  if(!confirm("Delete assignment #"+a.seq+" “"+a.title+"”? The rest of the sequence closes up around it.")) return;
+  State.data.assignments = State.data.assignments.filter(x=>x.id!==a.id);
+  resequence(a.courseId);
+  const c=courseById(a.courseId);
+  markDirty("Assignment deleted", (c?c.name+" · ":"")+a.title);
+  render();
+}
+function moveAssignment(a, dir){                // slide up/down to reorder the teaching sequence (v5)
+  const list=courseAssignments(a.courseId);
+  const i=list.indexOf(a), j=i+dir;
+  if(j<0 || j>=list.length) return;
+  [list[i].seq, list[j].seq] = [list[j].seq, list[i].seq];
+  markDirty();                                   // stamps modified; no log entry per nudge
+  render();
+}
+function effectiveLabels(a, c){                  // what the completion record will one day snapshot
+  if(a.subjectOverride) return { subject:a.subjectOverride, focus:a.focusOverride||"" };
+  return { subject:c.subject, focus:a.focusOverride||c.focus };
+}
+function addBatch(courseId, opts){               // repeating rules: generate assignments in bulk (v5 P0)
+  const count=Math.max(1, Math.min(500, Math.floor(opts.count)||0));
+  const pattern=(opts.title||"").trim();
+  if(!pattern){ toast("Please give the batch a title", true); return false; }
+  const start=Number.isFinite(opts.start)?Math.floor(opts.start):1;
+  let seq=courseAssignments(courseId).length;
+  for(let i=0;i<count;i++){
+    const n=start+i;
+    const a=newAssignment(courseId);
+    a.title = pattern.includes("{n}") ? pattern.replaceAll("{n}", n)
+            : (opts.mode==="numbered" && count>1 ? pattern+" "+n : pattern);
+    a.type=opts.type||"Lesson";
+    a.description=opts.description||"";
+    if(opts.narrationPrompt){ a.narrationPrompt=opts.narrationPrompt; a.narrationExpected=true; }
+    a.seq=++seq;
+    State.data.assignments.push(a);
+  }
+  const c=courseById(courseId);
+  markDirty("Assignments added in a batch", (c?c.name+" · ":"")+count+" × “"+pattern+"”");
+  return true;
+}
+
 /* ================================================================
    SECTION 6 — UI
    Renders everything from State. No data lives in the DOM.
    6.1 Shell & save status   6.2 Setup screen   6.3 Home
-   6.4 People screen   6.5 School year screen   6.6 Data & backups
+   6.4 Courses & assignments   6.5 People screen
+   6.6 School year screen      6.7 Data & backups
    ================================================================ */
 
 const app = document.getElementById("app");
@@ -588,10 +764,10 @@ function render(){
       el("div",{class:"save-status",id:"saveStatus"}))));
   renderSaveStatus();
   if(!State.data){ app.append(renderSetup(), el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage)); return; }
-  const tabs=[["home","Home"],["people","People"],["year","School Year"],["data","Data & Backups"]];
+  const tabs=[["home","Home"],["courses","Courses"],["people","People"],["year","School Year"],["data","Data & Backups"]];
   app.append(el("nav",{class:"tabs"},
     tabs.map(([id,label])=>el("button",{class:State.ui.screen===id?"active":"", onclick:()=>{State.ui.screen=id;render();}},label))));
-  app.append({home:renderHome, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
+  app.append({home:renderHome, courses:renderCourses, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
   app.append(el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage));
 }
 function renderSaveStatus(){
@@ -653,7 +829,7 @@ function renderHome(){
   const d=State.data, y=activeYear();
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"Home"),
-    el("p",{class:"screen-note"},"Stage 1 lays the foundation: your family, the school year, and a data file that saves and backs itself up. Courses, imports and the daily view arrive in the next stages."));
+    el("p",{class:"screen-note"},"Your family, the school year, and now your courses and their assignments. Putting work on the calendar arrives in Stage 3."));
   if(State.storage.mode==="browser"){
     wrap.append(el("div",{class:"card"},
       el("div",{class:"eyebrow",style:"margin-bottom:6px"},"This device's copy"),
@@ -665,6 +841,7 @@ function renderHome(){
   const items=[
     ["People", d.people.length? d.people.length+" added — "+d.people.map(p=>p.name).join(", ") : "none yet", "people", d.people.length>0],
     ["School year", y? y.label+" · Cycle "+y.cycle+y.ttVariant+" · "+fmtDate(y.startDate)+" – "+fmtDate(y.endDate) : "none yet", "year", !!y],
+    ["Courses", d.courses.length? d.courses.length+" course"+(d.courses.length===1?"":"s")+" · "+d.assignments.length+" assignment"+(d.assignments.length===1?"":"s") : "none yet — add your first on the Courses tab", "courses", d.courses.length>0],
     ["Data & backups", State.storage.mode==="folder" ? "Saving automatically to your folder" : "Kept in this browser — save a copy to Files when you finish", "data", true]
   ];
   const card=el("div",{class:"card"}, el("h3",{},"Getting set up"));
@@ -677,10 +854,295 @@ function renderHome(){
   wrap.append(card);
   wrap.append(el("div",{class:"card"},
     el("h3",{},"Coming in the next stages"),
-    el("p",{class:"li-sub"},"Stage 2: courses, assignments and your taxonomy in use · Stage 3: scheduling · Stage 4: the iPad daily view · then the LHP import and enrollment wizards.")));
+    el("p",{class:"li-sub"},"Stage 3: scheduling — cadence, breaks, slide forward · Stage 4: the iPad daily view with tap-to-complete · then the LHP import and enrollment wizards.")));
   return wrap;
 }
-/* --- 6.4 People screen --- */
+/* --- 6.4 Courses & assignments --- */
+function renderCourses(){
+  const sel = State.ui.selectedCourseId ? courseById(State.ui.selectedCourseId) : null;
+  if(sel) return courseDetail(sel);
+  const wrap=el("div",{});
+  wrap.append(el("h2",{class:"screen-title"},"Courses"),
+    el("p",{class:"screen-note"},"Everything you teach, imported or your own — each course carries its Category, Subject and Focus labels, and holds its assignments in teaching order. Dates come later; this is the plan, not the calendar."));
+  const total=State.data.courses.length;
+  if(!total && !State.ui.courseFormOpen)
+    wrap.append(el("div",{class:"card"},el("div",{class:"empty"},"No courses yet — add your first below (piano practice is a fine place to start).")));
+  tax().categories.forEach(cat=>{
+    const list=coursesInCategory(cat.name);
+    if(!list.length) return;
+    const card=el("div",{class:"card"},el("h3",{},cat.name));
+    list.forEach((c,i)=>{
+      const n=courseAssignments(c.id).length;
+      const kids=courseStudents(c).map(s=>s.name).join(", ");
+      const subBits=[
+        c.subject ? c.subject+(c.focus?" → "+c.focus:"") : null,
+        {individual:"Individual",group:"Group",family:"Family"}[c.type] + (kids?": "+kids:""),
+        c.cycle ? "Cycle "+c.cycle : null,
+        n+" assignment"+(n===1?"":"s")
+      ].filter(Boolean).join(" · ");
+      card.append(el("div",{class:"list-item"},
+        el("div",{class:"li-main"},
+          el("div",{class:"row"},el("div",{class:"li-name"},c.name),
+            c.parentLed?el("span",{class:"pill"},"Mom"):null,
+            c.status!=="active"?el("span",{class:"pill gray"},c.status):null),
+          el("div",{class:"li-sub"},subBits)),
+        el("button",{class:"btn quiet small",disabled:i===0,onclick:()=>moveCourse(c,-1),"aria-label":"Move "+c.name+" up"},"↑"),
+        el("button",{class:"btn quiet small",disabled:i===list.length-1,onclick:()=>moveCourse(c,1),"aria-label":"Move "+c.name+" down"},"↓"),
+        el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.batchFormOpen=false;State.ui.courseFormOpen=false;render();}},"Open")));
+    });
+    wrap.append(card);
+  });
+  if(State.ui.courseFormOpen && !State.ui.editingCourseId) wrap.append(courseForm(null));
+  else wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingCourseId=null;State.ui.courseFormOpen=true;render();}},"Add a course"));
+  return wrap;
+}
+
+function courseDetail(c){
+  const wrap=el("div",{});
+  wrap.append(el("div",{style:"margin:6px 0 10px"},
+    el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=null;State.ui.courseFormOpen=false;render();}},"‹ All courses")));
+  const kids=courseStudents(c).map(s=>s.name).join(", ");
+  const yr=State.data.schoolYears.find(y=>y.id===c.yearId);
+  const head=el("div",{class:"card"});
+  head.append(el("div",{class:"spread"},
+    el("div",{},
+      el("div",{class:"row"},el("h3",{style:"margin:0"},c.name),
+        c.parentLed?el("span",{class:"pill"},"Mom"):null,
+        c.status!=="active"?el("span",{class:"pill gray"},c.status):null),
+      el("div",{class:"li-sub"},[
+        c.category + (c.subject? " · "+c.subject+(c.focus?" → "+c.focus:"") : ""),
+        {individual:"Individual",group:"Group",family:"Family"}[c.type] + (kids?": "+kids:""),
+        c.cycle?"Cycle "+c.cycle:null, yr?yr.label:null,
+        c.cadence?c.cadence+"×/week":null, c.lessonMinutes?"~"+c.lessonMinutes+" min":null
+      ].filter(Boolean).join(" · "))),
+    el("div",{class:"row"},
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.courseFormOpen=!State.ui.courseFormOpen;State.ui.editingCourseId=c.id;render();}},State.ui.courseFormOpen?"Close editor":"Edit course"),
+      el("button",{class:"btn danger small",onclick:()=>deleteCourse(c)},"Delete"))));
+  if(c.links.length) head.append(el("div",{style:"margin-top:8px"},
+    c.links.map(u=>el("div",{},el("a",{href:u,target:"_blank",rel:"noopener"},u)))));
+  if(c.notes) head.append(el("p",{class:"li-sub",style:"margin-top:8px;white-space:pre-wrap"},c.notes));
+  wrap.append(head);
+  if(State.ui.courseFormOpen && State.ui.editingCourseId===c.id) wrap.append(courseForm(c));
+
+  const list=courseAssignments(c.id);
+  const card=el("div",{class:"card"},el("h3",{},"Assignments — in teaching order"),
+    el("p",{class:"screen-note",style:"margin-bottom:10px"},"The order here is the order the work happens, one row per sitting. Use ↑ ↓ to slide things around; the numbers follow. Scheduling onto real dates is Stage 3."));
+  if(!list.length) card.append(el("div",{class:"empty"},"Nothing here yet — add one, or add a whole batch at once."));
+  list.forEach((a,i)=>{
+    const eff=effectiveLabels(a,c);
+    const overridden = a.subjectOverride || a.focusOverride;
+    card.append(el("div",{class:"list-item"},
+      el("span",{class:"seq"},a.seq+"."),
+      el("div",{class:"li-main"},
+        el("div",{class:"row"},el("div",{class:"li-name"},a.title),
+          a.type!=="Lesson"?el("span",{class:"pill gray"},a.type):null,
+          overridden?el("span",{class:"pill gold"},eff.subject+(eff.focus?" → "+eff.focus:"")):null),
+        (a.description||a.narrationPrompt)?el("div",{class:"li-sub"},
+          [a.description, a.narrationPrompt?"Narration: “"+a.narrationPrompt+"”":null].filter(Boolean).join(" · ")):null),
+      el("button",{class:"btn quiet small",disabled:i===0,onclick:()=>moveAssignment(a,-1),"aria-label":"Move up"},"↑"),
+      el("button",{class:"btn quiet small",disabled:i===list.length-1,onclick:()=>moveAssignment(a,1),"aria-label":"Move down"},"↓"),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingAssignId=a.id;State.ui.assignFormOpen=true;State.ui.batchFormOpen=false;render();}},"Edit"),
+      el("button",{class:"btn danger small",onclick:()=>deleteAssignment(a)},"Delete")));
+  });
+  wrap.append(card);
+
+  if(State.ui.assignFormOpen){
+    const editing=State.data.assignments.find(a=>a.id===State.ui.editingAssignId);
+    wrap.append(assignmentForm(c, editing||null));
+  } else if(State.ui.batchFormOpen){
+    wrap.append(batchForm(c));
+  } else {
+    wrap.append(el("div",{class:"row"},
+      el("button",{class:"btn",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add an assignment"),
+      el("button",{class:"btn secondary",onclick:()=>{State.ui.batchFormOpen=true;render();}},"Add a batch (repeating)")));
+  }
+  return wrap;
+}
+
+/* Subject/Focus pickers with create-new-inline (v5: “searchable dropdowns
+   with create-new-inline everywhere”) */
+function subjectFocusPickers(obj, subjKey, focusKey, inheritCourse){
+  const NEW="__new__";
+  const subjSel=el("select",{}), focusSel=el("select",{});
+  function fillSubjects(){
+    clear(subjSel);
+    subjSel.append(el("option",{value:"",selected:!obj[subjKey]},
+      inheritCourse ? "Inherit from course"+(inheritCourse.subject?" ("+inheritCourse.subject+")":"") : "— no subject —"));
+    tax().subjects.forEach(s=>subjSel.append(el("option",{value:s.name,selected:obj[subjKey]===s.name},s.name)));
+    subjSel.append(el("option",{value:NEW},"＋ Add a new subject…"));
+  }
+  function fillFocuses(){
+    clear(focusSel);
+    const effSubj = obj[subjKey] || (inheritCourse ? inheritCourse.subject : "");
+    focusSel.append(el("option",{value:"",selected:!obj[focusKey]},
+      inheritCourse && !obj[subjKey] ? "Inherit from course"+(inheritCourse.focus?" ("+inheritCourse.focus+")":"") : "— no focus —"));
+    focusesFor(effSubj).forEach(f=>focusSel.append(el("option",{value:f,selected:obj[focusKey]===f},f)));
+    if(effSubj) focusSel.append(el("option",{value:NEW},"＋ Add a new focus…"));
+  }
+  subjSel.addEventListener("change",()=>{
+    if(subjSel.value===NEW){
+      const name=addTaxSubject(prompt("Name the new subject (e.g. Logic):"));
+      obj[subjKey]=name||""; fillSubjects();
+    } else obj[subjKey]=subjSel.value;
+    obj[focusKey]=""; fillFocuses();
+  });
+  focusSel.addEventListener("change",()=>{
+    const effSubj = obj[subjKey] || (inheritCourse ? inheritCourse.subject : "");
+    if(focusSel.value===NEW){
+      const name=addTaxFocus(effSubj, prompt("Name the new focus under "+effSubj+":"));
+      obj[focusKey]=name||""; fillFocuses();
+    } else obj[focusKey]=focusSel.value;
+  });
+  fillSubjects(); fillFocuses();
+  return { subjSel, focusSel };
+}
+
+function courseForm(existing){
+  const c = existing ? deepClone(existing) : newCourse();
+  const card=el("div",{class:"card"}, el("h3",{}, existing?"Edit “"+existing.name+"”":"Add a course"));
+  const nameIn=el("input",{type:"text",value:c.name,placeholder:"e.g. Piano Practice",oninput:e=>c.name=e.target.value});
+  const catSel=el("select",{onchange:e=>c.category=e.target.value},
+    tax().categories.map(k=>el("option",{value:k.name,selected:c.category===k.name},k.name)));
+  const {subjSel,focusSel}=subjectFocusPickers(c,"subject","focus",null);
+  const typeSel=el("select",{onchange:e=>{c.type=e.target.value;studentsWrap.style.display=c.type==="family"?"none":"";}},
+    COURSE_TYPES.map(([v,label])=>el("option",{value:v,selected:c.type===v},label)));
+  const studentsBox=el("div",{class:"row"});
+  students().forEach(s=>{
+    const on=c.studentIds.includes(s.id);
+    const lab=el("label",{class:"row",style:"gap:6px;border:1px solid var(--line);border-radius:8px;padding:8px 12px;cursor:pointer;background:#FDFCF8"},
+      el("input",{type:"checkbox",checked:on,onchange:e=>{
+        if(e.target.checked){ if(!c.studentIds.includes(s.id)) c.studentIds.push(s.id); }
+        else c.studentIds=c.studentIds.filter(id=>id!==s.id);
+      }}),
+      el("span",{class:"color-dot",style:"background:"+s.color}), s.name);
+    studentsBox.append(lab);
+  });
+  if(!students().length) studentsBox.append(el("span",{class:"li-sub"},"No students yet — add them on the People tab."));
+  const studentsWrap=el("label",{class:"field",style:c.type==="family"?"display:none":""},"Students",studentsBox);
+  const yearSel=el("select",{onchange:e=>c.yearId=e.target.value||null},
+    el("option",{value:"",selected:!c.yearId},"— no school year yet —"),
+    State.data.schoolYears.map(y=>el("option",{value:y.id,selected:c.yearId===y.id},y.label+(y.archived?" (archived)":""))));
+  const cycleSel=el("select",{onchange:e=>c.cycle=e.target.value?Number(e.target.value):null},
+    el("option",{value:"",selected:!c.cycle},"No cycle — Kindergarten & your own courses"),
+    CYCLES.map(k=>el("option",{value:k,selected:c.cycle===k},"Cycle "+k)));
+  const cadIn=el("input",{type:"number",min:"1",max:"7",value:c.cadence??"",placeholder:"e.g. 4",onchange:e=>c.cadence=e.target.value?Number(e.target.value):null});
+  const minIn=el("input",{type:"number",min:"1",value:c.lessonMinutes??"",placeholder:"e.g. 15",onchange:e=>c.lessonMinutes=e.target.value?Number(e.target.value):null});
+  const parentChk=el("input",{type:"checkbox",checked:c.parentLed,onchange:e=>c.parentLed=e.target.checked});
+  const linksIn=el("textarea",{placeholder:"One link per line (songs, videos, PDFs…)",oninput:e=>c.links=e.target.value.split("\n").map(s=>s.trim()).filter(Boolean)},c.links.join("\n"));
+  const notesIn=el("textarea",{placeholder:"Notes (optional)",oninput:e=>c.notes=e.target.value},c.notes);
+  const statusSel=el("select",{onchange:e=>c.status=e.target.value},
+    COURSE_STATUSES.map(s=>el("option",{value:s,selected:c.status===s},s[0].toUpperCase()+s.slice(1))));
+  card.append(el("div",{class:"stack"},
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"Name",nameIn),
+      el("label",{class:"field"},"Category",catSel),
+      el("label",{class:"field"},"Subject",subjSel),
+      el("label",{class:"field"},"Focus ",el("span",{class:"hint"},"optional"),focusSel),
+      el("label",{class:"field"},"Course type",typeSel),
+      el("label",{class:"field"},"School year",yearSel)),
+    studentsWrap,
+    el("details",{class:"adv",open:!!existing},el("summary",{},"More details — cycle, cadence, links, notes"),
+      el("div",{class:"stack",style:"margin-top:10px"},
+        el("div",{class:"grid2"},
+          el("label",{class:"field"},"Curriculum cycle",cycleSel),
+          existing?el("label",{class:"field"},"Status",statusSel):null,
+          el("label",{class:"field"},"Times per week ",el("span",{class:"hint"},"used by scheduling later"),cadIn),
+          el("label",{class:"field"},"Typical lesson minutes",minIn)),
+        el("label",{class:"row",style:"font-size:14px;font-weight:600;gap:8px;cursor:pointer"},parentChk,"Parent-led (shows in the Mom view later)"),
+        el("label",{class:"field"},"Resource links",linksIn),
+        el("label",{class:"field"},"Notes",notesIn))),
+    el("div",{class:"row"},
+      el("button",{class:"btn",onclick:()=>{
+        if(existing){ Object.assign(existing,{name:c.name,category:c.category,subject:c.subject,focus:c.focus,
+            type:c.type,studentIds:[...c.studentIds],yearId:c.yearId,cycle:c.cycle,cadence:c.cadence,
+            lessonMinutes:c.lessonMinutes,parentLed:c.parentLed,links:[...c.links],notes:c.notes,status:c.status});
+          if(!saveCourse(existing,false)) return; }
+        else if(!saveCourse(c,true)) return;
+        State.ui.courseFormOpen=false; State.ui.editingCourseId=null; render();
+      }}, existing?"Save changes":"Add course"),
+      el("button",{class:"btn quiet",onclick:()=>{State.ui.courseFormOpen=false;State.ui.editingCourseId=null;render();}},"Cancel"))));
+  return card;
+}
+
+function assignmentForm(course, existing){
+  const a = existing ? deepClone(existing) : newAssignment(course.id);
+  const card=el("div",{class:"card"}, el("h3",{}, existing?"Edit assignment #"+existing.seq:"Add an assignment"),
+    existing?null:el("p",{class:"screen-note"},"It lands at the end of the sequence — slide it into place with the arrows. Labels inherit from the course; no classification needed."));
+  const titleIn=el("input",{type:"text",value:a.title,placeholder:"e.g. Little House in the Big Woods, Ch. 1",oninput:e=>a.title=e.target.value});
+  const typeSel=el("select",{onchange:e=>a.type=e.target.value},
+    tax().assignmentTypes.map(t=>el("option",{value:t,selected:a.type===t},t)));
+  const descIn=el("textarea",{placeholder:"Description (optional)",oninput:e=>a.description=e.target.value},a.description);
+  const promptIn=el("input",{type:"text",value:a.narrationPrompt,placeholder:"e.g. Tell me about Sally's big brass kettle",
+    oninput:e=>{a.narrationPrompt=e.target.value; if(e.target.value) {a.narrationExpected=true; narrChk.checked=true;}}});
+  const narrChk=el("input",{type:"checkbox",checked:a.narrationExpected,onchange:e=>a.narrationExpected=e.target.checked});
+  const linkIn=el("input",{type:"text",value:a.link,placeholder:"https://…",oninput:e=>a.link=e.target.value});
+  const minIn=el("input",{type:"number",min:"1",value:a.minutes??"",placeholder:"e.g. 20",onchange:e=>a.minutes=e.target.value?Number(e.target.value):null});
+  const {subjSel,focusSel}=subjectFocusPickers(a,"subjectOverride","focusOverride",course);
+  const tagsIn=el("input",{type:"text",value:a.tags.join(", "),placeholder:"comma, separated, tags",
+    oninput:e=>a.tags=e.target.value.split(",").map(s=>s.trim()).filter(Boolean)});
+  const notesIn=el("textarea",{placeholder:"Notes (optional)",oninput:e=>a.notes=e.target.value},a.notes);
+  card.append(el("div",{class:"stack"},
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"Title",titleIn),
+      el("label",{class:"field"},"Type",typeSel)),
+    el("label",{class:"field"},"Description",descIn),
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"Narration prompt ",el("span",{class:"hint"},"the question you'll ask"),promptIn),
+      el("label",{class:"field"},"Resource link",linkIn)),
+    el("label",{class:"row",style:"font-size:14px;font-weight:600;gap:8px;cursor:pointer"},narrChk,"Narration expected on this assignment"),
+    el("details",{class:"adv",open:!!(a.subjectOverride||a.focusOverride||a.tags.length||a.notes||a.minutes)},
+      el("summary",{},"Advanced — subject/focus override, time, tags, notes"),
+      el("div",{class:"stack",style:"margin-top:10px"},
+        el("p",{class:"li-sub"},"Only set these when this assignment genuinely differs from its course — e.g. a Together Time catechism row landing under Bible → Catechism & Creeds."),
+        el("div",{class:"grid2"},
+          el("label",{class:"field"},"Subject override",subjSel),
+          el("label",{class:"field"},"Focus override",focusSel),
+          el("label",{class:"field"},"Time estimate (minutes)",minIn),
+          el("label",{class:"field"},"Tags",tagsIn)),
+        el("label",{class:"field"},"Notes",notesIn))),
+    el("div",{class:"row"},
+      el("button",{class:"btn",onclick:()=>{
+        if(existing){ Object.assign(existing,{title:a.title,description:a.description,type:a.type,
+            subjectOverride:a.subjectOverride,focusOverride:a.focusOverride,link:a.link,minutes:a.minutes,
+            tags:[...a.tags],notes:a.notes,narrationExpected:a.narrationExpected,narrationPrompt:a.narrationPrompt});
+          if(!saveAssignment(existing,false)) return; }
+        else if(!saveAssignment(a,true)) return;
+        State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render();
+      }}, existing?"Save changes":"Add assignment"),
+      el("button",{class:"btn quiet",onclick:()=>{State.ui.assignFormOpen=false;State.ui.editingAssignId=null;render();}},"Cancel"))));
+  return card;
+}
+
+function batchForm(course){
+  const opts={ count:5, title:"", start:1, mode:"numbered", type:"Lesson", description:"", narrationPrompt:"" };
+  const card=el("div",{class:"card"}, el("h3",{},"Add a batch — repeating rules"),
+    el("p",{class:"screen-note"},"Make many assignments at once: a chapter per day, one catechism question a week, or the same memory work for six weeks. Write {n} in the title where the number should go — “Chapter {n}” becomes Chapter 4, Chapter 5, and so on."));
+  const titleIn=el("input",{type:"text",placeholder:"e.g. Chapter {n} — or: Psalm 23 memory work",oninput:e=>opts.title=e.target.value});
+  const countIn=el("input",{type:"number",min:"1",max:"500",value:opts.count,onchange:e=>opts.count=Number(e.target.value)||1});
+  const startIn=el("input",{type:"number",value:opts.start,onchange:e=>opts.start=Number(e.target.value)});
+  const modeSel=el("select",{onchange:e=>opts.mode=e.target.value},
+    BATCH_MODES.map(([v,label])=>el("option",{value:v,selected:opts.mode===v},label)));
+  const typeSel=el("select",{onchange:e=>opts.type=e.target.value},
+    tax().assignmentTypes.map(t=>el("option",{value:t,selected:opts.type===t},t)));
+  const promptIn=el("input",{type:"text",placeholder:"Applied to every one (optional)",oninput:e=>opts.narrationPrompt=e.target.value});
+  const descIn=el("textarea",{placeholder:"Description applied to every one (optional)",oninput:e=>opts.description=e.target.value});
+  card.append(el("div",{class:"stack"},
+    el("label",{class:"field"},"Title pattern",titleIn),
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"How many",countIn),
+      el("label",{class:"field"},"Start numbering at",startIn),
+      el("label",{class:"field"},"Pattern",modeSel),
+      el("label",{class:"field"},"Type",typeSel)),
+    el("div",{class:"grid2"},
+      el("label",{class:"field"},"Narration prompt",promptIn),
+      el("label",{class:"field"},"Description",descIn)),
+    el("div",{class:"row"},
+      el("button",{class:"btn",onclick:()=>{ if(addBatch(course.id,opts)){ State.ui.batchFormOpen=false; render(); toast(Math.max(1,Math.min(500,Math.floor(opts.count)||1))+" assignments added"); } }},"Create the batch"),
+      el("button",{class:"btn quiet",onclick:()=>{State.ui.batchFormOpen=false;render();}},"Cancel"))));
+  return card;
+}
+
+/* --- 6.5 People screen --- */
 function renderPeople(){
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"People"),
@@ -738,7 +1200,7 @@ function personForm(existing){
   return card;
 }
 
-/* --- 6.5 School Year screen --- */
+/* --- 6.6 School Year screen --- */
 function renderYears(){
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"School Year"),
@@ -853,7 +1315,7 @@ function dateBlockEditor(y,kind,title,placeholder){
   return box;
 }
 
-/* --- 6.6 Data & Backups screen --- */
+/* --- 6.7 Data & Backups screen --- */
 function renderData(){
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"Data & Backups"),
@@ -866,12 +1328,13 @@ function renderData(){
     el("div",{class:"kv"},el("b",{},"Data file"),el("span",{class:"mono"},APP.dataFileName+" · schema v"+State.data.schemaVersion)),
     el("div",{class:"kv"},el("b",{},"App version"),el("span",{class:"mono"},"v"+APP.version+" · "+APP.stage)),
     el("div",{class:"row",style:"margin-top:10px"},
-      el("button",{class:"btn secondary small",onclick:()=>saveNow(true)},"Save now"),
+      s.mode==="folder"?el("button",{class:"btn secondary small",onclick:()=>saveNow(true)},"Save now"):null,
       el("button",{class:"btn secondary small",onclick:exportJSON}, s.mode==="browser"?"Save a copy to Files":"Export a copy"),
+      s.mode==="browser"?el("button",{class:"btn secondary small",onclick:exportDatedBackup},"Save a dated backup"):null,
       s.mode!=="folder"&&folderCapable()?el("button",{class:"btn quiet small",onclick:chooseFolder},"Switch to folder mode"):null));
   wrap.append(info);
 
-  if(s.mode==="browser") wrap.append(el("div",{class:"notice warn"},"On iPad and iPhone: after tapping “Save a copy to Files”, choose Save to Files and pick your planner folder in iCloud Drive, replacing the old planner-data.json. Do this at the end of a working session, or whenever the dot up top is gold."));
+  if(s.mode==="browser") wrap.append(el("div",{class:"notice warn"},"On iPad and iPhone: your work is kept on this device automatically as you go — no save button needed. At the end of a session, tap “Save a copy to Files” and replace planner-data.json in your planner folder. “Save a dated backup” makes a timestamped snapshot to drop into your backups/ folder — the manual twin of the Mac's automatic ones."));
 
   const bak=el("div",{class:"card"},el("h3",{},"Backups"));
   const listBox=el("div",{}); bak.append(listBox);
