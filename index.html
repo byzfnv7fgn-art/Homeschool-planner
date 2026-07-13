@@ -147,7 +147,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.2.3", stage: "Stage 2 — Courses & Assignments", schemaVersion: 4, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.2.4", stage: "Stage 2 — Courses & Assignments", schemaVersion: 5, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -272,7 +272,7 @@ const State = {
   },
   ui: { screen: "home", editingPersonId: null, yearFormOpen: false, selectedYearId: null, personFormOpen: false,
         selectedCourseId: null, courseFormOpen: false, editingCourseId: null,        // Stage 2
-        assignFormOpen: false, editingAssignId: null, quickAddOpen: false }
+        assignFormOpen: false, editingAssignId: null, quickAddOpen: false, editingYearId: null }
 };
 
 /* --- 3.2 Blank data file & entity factories --- */
@@ -370,6 +370,13 @@ function upgradeSchema(data){
           a.link=normalizeLink(a.link);
         });
         data.schemaVersion = 4; break;
+      case 4: {  // v5: one flat course list — manual sort order becomes global, not per-category
+        const catOrder=(data.taxonomy&&data.taxonomy.categories?data.taxonomy.categories:[]).map(k=>k.name);
+        const rank=n=>{ const i=catOrder.indexOf(n); return i<0?999:i; };
+        (data.courses||[]).slice()
+          .sort((a,b)=>(rank(a.category)-rank(b.category)) || ((a.sortPos||0)-(b.sortPos||0)) || (a.name||"").localeCompare(b.name||""))
+          .forEach((c,i)=>{ c.sortPos=i+1; });
+        data.schemaVersion = 5; break; }
       default: data.schemaVersion = APP.schemaVersion;   // nothing to do
     }
   }
@@ -628,12 +635,31 @@ function saveYear(y, isNew){
   return true;
 }
 function deleteYear(y){
-  if(!confirm("Delete the "+y.label+" school year? Breaks, terms and grade assignments in it are removed too.")) return;
+  const linked=State.data.courses.filter(c=>c.yearId===y.id);
+  if(!confirm("Delete the "+y.label+" school year? Breaks, terms and grade assignments in it are removed too."
+    +(linked.length?"\n\n"+linked.length+" course"+(linked.length===1?"":"s")+" point at this year — they'll stay, but lose their year link.":""))) return;
+  linked.forEach(c=>{ c.yearId=null; c.modifiedAt=nowISO(); });
   State.data.schoolYears = State.data.schoolYears.filter(x=>x.id!==y.id);
   if(State.data.settings.activeSchoolYearId===y.id)
     State.data.settings.activeSchoolYearId = State.data.schoolYears[0]?.id || null;
   markDirty("School year deleted", y.label);
   State.ui.selectedYearId=null; render();
+}
+function setYearArchived(y, flag){
+  if(flag){
+    const affected=State.data.courses.filter(c=>c.yearId===y.id && c.status!=="archived");
+    if(!confirm("Archive "+y.label+"? It can no longer be the active year"
+      +(affected.length?", and its "+affected.length+" course"+(affected.length===1?"":"s")+" will be archived with it":"")
+      +". Nothing is deleted — grades and records are kept for portfolios and transcripts.")) return;
+    affected.forEach(c=>{ c.status="archived"; c.modifiedAt=nowISO(); });
+    y.archived=true;
+    if(State.data.settings.activeSchoolYearId===y.id) State.data.settings.activeSchoolYearId=null;
+    touchYear(y,"Year archived", y.label+(affected.length?" (with "+affected.length+" courses)":""));
+  } else {
+    y.archived=false;
+    touchYear(y,"Year unarchived", y.label+" — its courses stay archived; un-archive any course from its editor");
+  }
+  render();
 }
 function addDateBlock(y, kind, name, start, end){       // kind: "breaks" | "terms"
   name=(name||"").trim();
@@ -678,9 +704,8 @@ function addTaxFocus(subjectName, name){
 }
 
 /* --- 5.4 Courses --- */
-function coursesInCategory(cat){
-  return State.data.courses.filter(c=>c.category===cat)
-    .sort((a,b)=>(a.sortPos-b.sortPos)||a.name.localeCompare(b.name));
+function coursesAll(){                          // one flat, hand-ordered list (v0.2.4: categories are labels, not walls)
+  return State.data.courses.slice().sort((a,b)=>(a.sortPos-b.sortPos)||a.name.localeCompare(b.name));
 }
 function courseById(id){ return State.data.courses.find(c=>c.id===id) || null; }
 function saveCourse(c, isNew){
@@ -690,7 +715,7 @@ function saveCourse(c, isNew){
   if(c.type==="family") c.studentIds=[];
   c.links=(c.links||[]).map(normalizeLink);
   if(isNew){
-    c.sortPos = Math.max(0, ...coursesInCategory(c.category).map(x=>x.sortPos)) + 1;
+    c.sortPos = Math.max(0, ...State.data.courses.map(x=>x.sortPos)) + 1;
     State.data.courses.push(c);
   } else c.modifiedAt=nowISO();
   markDirty(isNew?"Course added":"Course updated", c.name+" ("+c.category+(c.subject?" · "+c.subject:"")+")");
@@ -705,8 +730,8 @@ function deleteCourse(c){
   markDirty("Course deleted", c.name+(n?" (with "+n+" assignments)":""));
   render();
 }
-function moveCourse(c, dir){                    // manual sort order within a category (v5, P1 groundwork)
-  const list=coursesInCategory(c.category);
+function moveCourse(c, dir){                    // manual sort in the one flat list — categories don't block the arrows
+  const list=coursesAll();
   list.forEach((x,i)=>x.sortPos=i+1);           // normalize first
   const i=list.indexOf(c), j=i+dir;
   if(j<0 || j>=list.length) return;
@@ -969,14 +994,25 @@ function render(){
   app.append(el("nav",{class:"tabs"},
     tabs.map(([id,label])=>el("button",{class:State.ui.screen===id?"active":"", onclick:()=>{State.ui.screen=id;render();}},label))));
   app.append({home:renderHome, courses:renderCourses, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
-  if(State.ui.screen==="courses" && State.ui.assignFormOpen && State.ui.selectedCourseId){
-    const c=courseById(State.ui.selectedCourseId);
-    if(c){                                        // the form floats above the list — no scrolling to the bottom to edit
-      const editing=State.data.assignments.find(a=>a.id===State.ui.editingAssignId);
-      app.append(el("div",{class:"overlay",onclick:e=>{ if(e.target.classList.contains("overlay")){/* click outside: keep open — explicit Cancel only, so edits aren't lost */ }}},
-        el("div",{class:"modal"}, assignmentForm(c, editing||null))));
+  const modal=currentModal();                     // every add/edit form floats above its page — locked build preference
+  if(modal) app.append(el("div",{class:"overlay"}, el("div",{class:"modal"}, modal)));
+}
+function currentModal(){                          // explicit Save/Cancel only; tapping the backdrop never discards edits
+  const ui=State.ui;
+  if(!State.data) return null;
+  if(ui.screen==="courses"){
+    if(ui.assignFormOpen && ui.selectedCourseId){
+      const c=courseById(ui.selectedCourseId);
+      if(c) return assignmentForm(c, State.data.assignments.find(a=>a.id===ui.editingAssignId)||null);
     }
+    if(ui.courseFormOpen) return courseForm(ui.editingCourseId?courseById(ui.editingCourseId):null);
+    if(ui.quickAddOpen) return quickAddModal();
   }
+  if(ui.screen==="people" && ui.personFormOpen)
+    return personForm(State.data.people.find(p=>p.id===ui.editingPersonId)||null);
+  if(ui.screen==="year" && ui.yearFormOpen)
+    return yearForm(State.data.schoolYears.find(y=>y.id===ui.editingYearId)||null);
+  return null;
   app.append(el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage));
 }
 function renderSaveStatus(){
@@ -1072,61 +1108,59 @@ function renderCourses(){
   if(sel) return courseDetail(sel);
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"Courses"),
-    el("p",{class:"screen-note"},"Everything you teach, imported or your own — each course carries its Category, Subject and Focus labels, and holds its assignments in teaching order. Dates come later; this is the plan, not the calendar."));
+    el("p",{class:"screen-note"},"Everything you teach, imported or your own, in one hand-ordered list — the category rides along as a label. Dates come later; this is the plan, not the calendar."));
   const total=State.data.courses.length;
-  if(!total && !State.ui.courseFormOpen)
-    wrap.append(el("div",{class:"card"},el("div",{class:"empty"},"No courses yet — add your first below (piano practice is a fine place to start).")));
-  tax().categories.forEach(cat=>{
-    const list=coursesInCategory(cat.name);
-    if(!list.length) return;
-    const card=el("div",{class:"card"},el("h3",{},cat.name));
-    list.forEach((c,i)=>{
-      const n=courseAssignments(c.id).length;
-      const kids=courseStudents(c).map(s=>s.name).join(", ");
-      const subBits=[
-        c.subject ? c.subject+(c.focus?" → "+c.focus:"") : null,
-        {individual:"Individual",group:"Group",family:"Family"}[c.type] + (kids?": "+kids:""),
-        c.weeks ? c.weeks+" wks × "+dpw(c)+" days" : null,
-        c.cycle ? "Cycle "+c.cycle : null,
-        n+" assignment"+(n===1?"":"s")
-      ].filter(Boolean).join(" · ");
-      card.append(el("div",{class:"list-item"},
-        el("div",{class:"li-main"},
-          el("div",{class:"row"},el("div",{class:"li-name"},c.name),
-            c.parentLed?el("span",{class:"pill"},"Mom"):null,
-            c.status!=="active"?el("span",{class:"pill gray"},c.status):null),
-          el("div",{class:"li-sub"},subBits)),
-        el("button",{class:"btn quiet small",disabled:i===0,onclick:()=>moveCourse(c,-1),"aria-label":"Move "+c.name+" up"},"↑"),
-        el("button",{class:"btn quiet small",disabled:i===list.length-1,onclick:()=>moveCourse(c,1),"aria-label":"Move "+c.name+" down"},"↓"),
-        el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.quickAddOpen=false;State.ui.courseFormOpen=false;render();}},"Open")));
-    });
-    wrap.append(card);
-  });
-  if(State.ui.courseFormOpen && !State.ui.editingCourseId) wrap.append(courseForm(null));
-  else if(State.ui.quickAddOpen && total){
-    const card=el("div",{class:"card"},el("h3",{},"Add an assignment"),
-      el("p",{class:"screen-note"},"Every assignment lives in a course — that's where its labels, its place in the sequence, and (soon) its records come from. Pick the course and the form opens right there."));
-    const sel=el("select",{});
-    sel.append(el("option",{value:"",selected:true},"Choose a course…"));
-    tax().categories.forEach(cat=>coursesInCategory(cat.name).forEach(c=>
-      sel.append(el("option",{value:c.id},cat.name+" · "+c.name))));
-    sel.addEventListener("change",()=>{ if(!sel.value) return;
-      State.ui.selectedCourseId=sel.value; State.ui.quickAddOpen=false;
-      State.ui.assignFormOpen=true; State.ui.editingAssignId=null; State.ui.courseFormOpen=false; render(); });
-    card.append(el("div",{class:"stack"}, el("label",{class:"field"},"Course",sel),
-      el("div",{class:"row"},el("button",{class:"btn quiet",onclick:()=>{State.ui.quickAddOpen=false;render();}},"Cancel"))));
-    wrap.append(card);
-  }
-  else wrap.append(el("div",{class:"row"},
+  wrap.append(el("div",{class:"row",style:"margin:2px 0 12px"},
     el("button",{class:"btn",onclick:()=>{State.ui.editingCourseId=null;State.ui.courseFormOpen=true;State.ui.quickAddOpen=false;render();}},"Add a course"),
-    total?el("button",{class:"btn secondary",onclick:()=>{State.ui.quickAddOpen=true;render();}},"Add an assignment…"):null));
+    total?el("button",{class:"btn secondary",onclick:()=>{State.ui.quickAddOpen=true;State.ui.courseFormOpen=false;render();}},"Add an assignment…"):null));
+  const card=el("div",{class:"card"});
+  if(!total) card.append(el("div",{class:"empty"},"No courses yet — add your first above (piano practice is a fine place to start)."));
+  const list=coursesAll();
+  list.forEach((c,i)=>{
+    const n=courseAssignments(c.id).length;
+    const kids=courseStudents(c).map(s=>s.name).join(", ");
+    const pills=el("div",{class:"row",style:"gap:6px;flex-wrap:wrap;margin-top:3px"},
+      c.subject?el("span",{class:"pill gold"},c.subject+(c.focus?" → "+c.focus:"")):null,
+      el("span",{class:"pill gray"},{individual:"Individual",group:"Group",family:"Family"}[c.type]+(kids?" · "+kids:"")),
+      c.weeks?el("span",{class:"pill gray"},c.weeks+"w × "+dpw(c)+"d"):null,
+      c.cycle?el("span",{class:"pill gray"},"Cycle "+c.cycle):null,
+      el("span",{class:"pill gray"},n+" assignment"+(n===1?"":"s")),
+      c.parentLed?el("span",{class:"pill"},"Mom"):null);
+    card.append(el("div",{class:"list-item"},
+      el("div",{class:"li-main"},
+        el("div",{class:"row"},el("div",{class:"li-name"},c.name),
+          el("span",{class:"pill"},c.category),
+          c.status!=="active"?el("span",{class:"pill gray"},c.status):null),
+        pills),
+      el("button",{class:"btn quiet small",disabled:i===0,onclick:()=>moveCourse(c,-1),"aria-label":"Move "+c.name+" up"},"↑"),
+      el("button",{class:"btn quiet small",disabled:i===list.length-1,onclick:()=>moveCourse(c,1),"aria-label":"Move "+c.name+" down"},"↓"),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.quickAddOpen=false;State.ui.courseFormOpen=false;render();}},"View"),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingCourseId=c.id;State.ui.courseFormOpen=true;render();}},"Edit"),
+      el("button",{class:"btn danger small",onclick:()=>deleteCourse(c)},"Remove")));
+  });
+  wrap.append(card);
   return wrap;
+}
+
+function quickAddModal(){
+  const card=el("div",{class:"card"},el("h3",{},"Add an assignment"),
+    el("p",{class:"screen-note"},"Every assignment lives in a course — that's where its labels, its place in the sequence, and (soon) its records come from. Pick the course and the form opens right there."));
+  const sel=el("select",{});
+  sel.append(el("option",{value:"",selected:true},"Choose a course…"));
+  coursesAll().forEach(c=>sel.append(el("option",{value:c.id},c.category+" · "+c.name)));
+  sel.addEventListener("change",()=>{ if(!sel.value) return;
+    State.ui.selectedCourseId=sel.value; State.ui.quickAddOpen=false;
+    State.ui.assignFormOpen=true; State.ui.editingAssignId=null; State.ui.courseFormOpen=false; render(); });
+  card.append(el("div",{class:"stack"}, el("label",{class:"field"},"Course",sel),
+    el("div",{class:"row"},el("button",{class:"btn quiet",onclick:()=>{State.ui.quickAddOpen=false;render();}},"Cancel"))));
+  return card;
 }
 
 function courseDetail(c){
   const wrap=el("div",{});
-  wrap.append(el("div",{style:"margin:6px 0 10px"},
-    el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=null;State.ui.courseFormOpen=false;render();}},"‹ All courses")));
+  wrap.append(el("div",{class:"spread",style:"margin:6px 0 10px"},
+    el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=null;State.ui.courseFormOpen=false;render();}},"‹ All courses"),
+    el("button",{class:"btn small",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add an assignment")));
   const kids=courseStudents(c).map(s=>s.name).join(", ");
   const yr=State.data.schoolYears.find(y=>y.id===c.yearId);
   const head=el("div",{class:"card"});
@@ -1143,13 +1177,12 @@ function courseDetail(c){
         c.lessonMinutes?"~"+c.lessonMinutes+" min":null
       ].filter(Boolean).join(" · "))),
     el("div",{class:"row"},
-      el("button",{class:"btn quiet small",onclick:()=>{State.ui.courseFormOpen=!State.ui.courseFormOpen;State.ui.editingCourseId=c.id;render();}},State.ui.courseFormOpen?"Close editor":"Edit course"),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingCourseId=c.id;State.ui.courseFormOpen=true;render();}},"Edit course"),
       el("button",{class:"btn danger small",onclick:()=>deleteCourse(c)},"Delete"))));
   if(c.links.length) head.append(el("div",{style:"margin-top:8px"},
     c.links.map(u=>el("div",{},el("a",{href:u,target:"_blank",rel:"noopener"},u)))));
   if(c.notes) head.append(el("p",{class:"li-sub",style:"margin-top:8px;white-space:pre-wrap"},c.notes));
   wrap.append(head);
-  if(State.ui.courseFormOpen && State.ui.editingCourseId===c.id) wrap.append(courseForm(c));
 
   const list=courseAssignments(c.id);
   const card=el("div",{class:"card"},el("h3",{},"Assignments — the course's own weeks and days"),
@@ -1180,7 +1213,6 @@ function courseDetail(c){
       el("button",{class:"btn danger small",onclick:()=>deleteAssignment(a)},"Delete")));
   });
   wrap.append(card);
-  wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add an assignment"));
   return wrap;
 }
 
@@ -1495,8 +1527,10 @@ function renderPeople(){
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"People"),
     el("p",{class:"screen-note"},"Students and the parent participant. Each student carries a color, an enrollment status, and a grade level per school year (set on the School Year tab)."));
+  wrap.append(el("div",{class:"row",style:"margin:2px 0 12px"},
+    el("button",{class:"btn",onclick:()=>{State.ui.editingPersonId=null;State.ui.personFormOpen=true;render();}},"Add Student")));
   const list=el("div",{class:"card"});
-  if(!State.data.people.length) list.append(el("div",{class:"empty"},"No one here yet — add your family below."));
+  if(!State.data.people.length) list.append(el("div",{class:"empty"},"No one here yet — Add Student above (the form's Role dropdown also covers a parent learner)."));
   State.data.people.forEach(p=>{
     const y=activeYear(); const grade=y?y.studentGrades[p.id]:null;
     list.append(el("div",{class:"list-item"},
@@ -1509,12 +1543,6 @@ function renderPeople(){
       el("button",{class:"btn danger small",onclick:()=>deletePerson(p)},"Remove")));
   });
   wrap.append(list);
-  if(State.ui.personFormOpen){
-    const editing = State.data.people.find(p=>p.id===State.ui.editingPersonId);
-    wrap.append(personForm(editing));
-  } else {
-    wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingPersonId=null;State.ui.personFormOpen=true;render();}},"Add a person"));
-  }
   return wrap;
 }
 function personForm(existing){
@@ -1553,19 +1581,43 @@ function renderYears(){
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"School Year"),
     el("p",{class:"screen-note"},"The year holds its dates, cycle and Together Time variant, the weekday pattern scheduling may use, target day count, breaks, optional terms, and each student's grade level. Your actual day count comes from completed work, per student — never from the pattern."));
-  State.data.schoolYears.forEach(y=>wrap.append(yearCard(y)));
-  if(!State.data.schoolYears.length && !State.ui.yearFormOpen)
-    wrap.append(el("div",{class:"card"},el("div",{class:"empty"},"No school year yet — create 2026–2027 below.")));
-  if(State.ui.yearFormOpen) wrap.append(yearForm());
-  else wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.yearFormOpen=true;render();}},"Create a school year"));
+  wrap.append(el("div",{class:"row",style:"margin:2px 0 12px"},
+    el("button",{class:"btn",onclick:()=>{State.ui.editingYearId=null;State.ui.yearFormOpen=true;render();}},"Add a school year")));
+  const card=el("div",{class:"card"});
+  if(!State.data.schoolYears.length) card.append(el("div",{class:"empty"},"No school year yet — create 2026–2027 above."));
+  State.data.schoolYears.forEach(y=>{
+    const open = State.ui.selectedYearId===y.id;
+    const isActive = State.data.settings.activeSchoolYearId===y.id;
+    card.append(el("div",{class:"list-item"},
+      el("div",{class:"li-main"},
+        el("div",{class:"row"},el("div",{class:"li-name"},y.label),
+          isActive?el("span",{class:"pill"},"Active"):null,
+          y.archived?el("span",{class:"pill gray"},"Archived"):null),
+        el("div",{class:"li-sub"},"Cycle "+y.cycle+" · Together Time "+y.cycle+y.ttVariant+" · "+fmtDate(y.startDate)+" – "+fmtDate(y.endDate)+" · target "+y.targetDays+" days")),
+      (!isActive && !y.archived)?el("button",{class:"btn quiet small",onclick:()=>{State.data.settings.activeSchoolYearId=y.id;markDirty("Active year changed",y.label);render();}},"Make active"):null,
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedYearId=open?null:y.id;render();}},open?"Close":"View"),
+      el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingYearId=y.id;State.ui.yearFormOpen=true;render();}},"Edit"),
+      el("button",{class:"btn quiet small",onclick:()=>setYearArchived(y,!y.archived)},y.archived?"Unarchive":"Archive"),
+      el("button",{class:"btn danger small",onclick:()=>deleteYear(y)},"Delete")));
+    if(open) card.append(yearDetails(y));
+  });
+  wrap.append(card);
   return wrap;
 }
-function yearForm(){
-  const y=newSchoolYear();
-  const card=el("div",{class:"card"},el("h3",{},"New school year"));
-  const labelIn=el("input",{type:"text",placeholder:"e.g. 2026–2027",oninput:e=>y.label=e.target.value});
-  const startIn=el("input",{type:"date",onchange:e=>{y.startDate=e.target.value; if(!labelIn.value){labelIn.value=yearLabelFromDate(y.startDate);y.label=labelIn.value;}}});
-  const endIn=el("input",{type:"date",onchange:e=>y.endDate=e.target.value});
+function yearDetails(y){                          // the View expansion: living editors for the year's contents
+  return el("div",{style:"padding:10px 4px 14px;border-bottom:1px solid var(--line-soft)"},
+    el("div",{class:"stack"},
+      el("label",{class:"field"},"School days of the week",weekdayPicker(y)),
+      gradesEditor(y),
+      dateBlockEditor(y,"breaks","Breaks & vacations","e.g. Christmas Break"),
+      dateBlockEditor(y,"terms","Terms (optional)","e.g. Term 1")));
+}
+function yearForm(existing){
+  const y = existing ? deepClone(existing) : newSchoolYear();
+  const card=el("div",{class:"card"},el("h3",{},existing?"Edit "+existing.label:"New school year"));
+  const labelIn=el("input",{type:"text",value:y.label,placeholder:"e.g. 2026–2027",oninput:e=>y.label=e.target.value});
+  const startIn=el("input",{type:"date",value:y.startDate,onchange:e=>{y.startDate=e.target.value; if(!labelIn.value){labelIn.value=yearLabelFromDate(y.startDate);y.label=labelIn.value;}}});
+  const endIn=el("input",{type:"date",value:y.endDate,onchange:e=>y.endDate=e.target.value});
   const cycleSel=el("select",{onchange:e=>y.cycle=Number(e.target.value)},CYCLES.map(c=>el("option",{value:c,selected:y.cycle===c},"Cycle "+c)));
   const varSel=el("select",{onchange:e=>y.ttVariant=e.target.value},TT_VARIANTS.map(v=>el("option",{value:v,selected:y.ttVariant===v},"Variant "+v+(v==="A"?" (first pass)":" (second pass)"))));
   const targetIn=el("input",{type:"number",min:"1",value:y.targetDays,onchange:e=>y.targetDays=Number(e.target.value)||DEFAULTS.targetDays});
@@ -1577,13 +1629,22 @@ function yearForm(){
       el("label",{class:"field"},"Last day",endIn),
       el("label",{class:"field"},"Curriculum cycle",cycleSel),
       el("label",{class:"field"},"Together Time variant",varSel)),
-    el("label",{class:"field"},"School days of the week ", el("span",{class:"hint"},"used only to place work on the calendar — skipping a day is always one tap later"), weekdayPicker(y)),
+    el("label",{class:"field"},el("div",{},"School days of the week ", el("span",{class:"hint"},"used only to place work on the calendar — skipping a day is always one tap later")), weekdayPicker(y,true)),
     el("div",{class:"row"},
-      el("button",{class:"btn",onclick:()=>{ if(saveYear(y,true)){State.ui.yearFormOpen=false;State.ui.selectedYearId=y.id;render();} }},"Create year"),
-      el("button",{class:"btn quiet",onclick:()=>{State.ui.yearFormOpen=false;render();}},"Cancel"))));
+      el("button",{class:"btn",onclick:()=>{
+        if(existing){
+          const fields={label:y.label,startDate:y.startDate,endDate:y.endDate,cycle:y.cycle,ttVariant:y.ttVariant,targetDays:y.targetDays,weekdayPattern:[...y.weekdayPattern]};
+          const before=deepClone(existing); Object.assign(existing,fields);
+          if(!saveYear(existing,false)){ Object.assign(existing,before); return; }
+        } else if(!saveYear(y,true)) return;
+        State.ui.yearFormOpen=false; State.ui.editingYearId=null;
+        if(!existing) State.ui.selectedYearId=y.id;
+        render();
+      }}, existing?"Save changes":"Create year"),
+      el("button",{class:"btn quiet",onclick:()=>{State.ui.yearFormOpen=false;State.ui.editingYearId=null;render();}},"Cancel"))));
   return card;
 }
-function weekdayPicker(y){
+function weekdayPicker(y, silent){               // silent: editing a form clone — the Save button does the touching
   const row=el("div",{class:"weekday-row"});
   WEEKDAY_NAMES.forEach((name,i)=>{
     const on=y.weekdayPattern.includes(i);
@@ -1592,48 +1653,11 @@ function weekdayPicker(y){
         if(e.target.checked){ if(!y.weekdayPattern.includes(i)) y.weekdayPattern.push(i); lab.classList.add("on"); }
         else { y.weekdayPattern=y.weekdayPattern.filter(d=>d!==i); lab.classList.remove("on"); }
         y.weekdayPattern.sort();
-        if(y.id && State.data.schoolYears.some(x=>x.id===y.id)) touchYear(y,"Weekday pattern changed",y.label);
+        if(!silent && y.id && State.data.schoolYears.some(x=>x.id===y.id)) touchYear(y,"Weekday pattern changed",y.label);
       }}), name);
     row.append(lab);
   });
   return row;
-}
-function yearCard(y){
-  const open = State.ui.selectedYearId===y.id;
-  const isActive = State.data.settings.activeSchoolYearId===y.id;
-  const card=el("div",{class:"card"});
-  card.append(el("div",{class:"spread"},
-    el("div",{},
-      el("div",{class:"row"},el("h3",{style:"margin:0"},y.label), isActive?el("span",{class:"pill"},"Active"):null, y.archived?el("span",{class:"pill gray"},"Archived"):null),
-      el("div",{class:"li-sub"},"Cycle "+y.cycle+" · Together Time "+y.cycle+y.ttVariant+" · "+fmtDate(y.startDate)+" – "+fmtDate(y.endDate)+" · target "+y.targetDays+" days")),
-    el("div",{class:"row"},
-      isActive?null:el("button",{class:"btn quiet small",onclick:()=>{State.data.settings.activeSchoolYearId=y.id;markDirty("Active year changed",y.label);render();}},"Make active"),
-      el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedYearId=open?null:y.id;render();}},open?"Close":"Details"))));
-  if(!open) return card;
-
-  /* details: dates & pattern */
-  const labelIn=el("input",{type:"text",value:y.label,onchange:e=>{const v=e.target.value.trim(); if(!v){toast("The label can't be empty",true);e.target.value=y.label;return;} y.label=v;touchYear(y,"School year renamed",v);render();}});
-  const startIn=el("input",{type:"date",value:y.startDate,onchange:e=>{y.startDate=e.target.value;touchYear(y,"School year updated",y.label);}});
-  const endIn=el("input",{type:"date",value:y.endDate,onchange:e=>{y.endDate=e.target.value;touchYear(y,"School year updated",y.label);}});
-  const targetIn=el("input",{type:"number",min:"1",value:y.targetDays,onchange:e=>{y.targetDays=Number(e.target.value)||y.targetDays;touchYear(y,"School year updated",y.label);}});
-  const cycleSel=el("select",{onchange:e=>{y.cycle=Number(e.target.value);touchYear(y,"School year updated",y.label);render();}},CYCLES.map(c=>el("option",{value:c,selected:y.cycle===c},"Cycle "+c)));
-  const varSel=el("select",{onchange:e=>{y.ttVariant=e.target.value;touchYear(y,"School year updated",y.label);render();}},TT_VARIANTS.map(v=>el("option",{value:v,selected:y.ttVariant===v},"Variant "+v)));
-  card.append(el("div",{class:"stack",style:"margin-top:10px"},
-    el("div",{class:"grid2"},
-      el("label",{class:"field"},"Label",labelIn),
-      el("label",{class:"field"},"First day",startIn),
-      el("label",{class:"field"},"Last day",endIn),
-      el("label",{class:"field"},"Curriculum cycle",cycleSel),
-      el("label",{class:"field"},"Together Time variant",varSel),
-      el("label",{class:"field"},"Target school days",targetIn)),
-    el("label",{class:"field"},"School days of the week",weekdayPicker(y)),
-    gradesEditor(y),
-    dateBlockEditor(y,"breaks","Breaks & vacations","e.g. Christmas Break"),
-    dateBlockEditor(y,"terms","Terms (optional)","e.g. Term 1"),
-    el("div",{class:"row"},
-      el("button",{class:"btn quiet small",onclick:()=>{y.archived=!y.archived;touchYear(y,y.archived?"Year archived":"Year unarchived",y.label);render();}},y.archived?"Unarchive":"Archive"),
-      el("button",{class:"btn danger small",onclick:()=>deleteYear(y)},"Delete year"))));
-  return card;
 }
 function gradesEditor(y){
   const box=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:6px"},"Grade levels this year"));
