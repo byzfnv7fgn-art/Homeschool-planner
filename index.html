@@ -126,6 +126,18 @@ table.plain th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;colo
 details.adv{margin-top:8px}
 .seq{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);min-width:52px;text-align:right;flex:none}
 .week-head{margin:14px 0 2px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700;border-bottom:1px solid var(--line-soft);padding-bottom:4px}
+.chip-groups{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:6px;align-items:center}
+.chip-group{display:inline-flex;flex-wrap:wrap;gap:5px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:2.5px 9px;border-radius:7px;border:1px solid transparent;color:var(--ink-soft);white-space:nowrap}
+.chip .ic{display:inline-flex}
+.chip .ic svg{width:12.5px;height:12.5px;display:block}
+.chip.acad{background:#EAF0E6;border-color:#DCE6D4;color:#3D5A49}
+.chip.cyc{background:#F6EFD9;border-color:#EADFBC;color:#8A6716}
+.chip.cat{background:transparent;border-color:var(--line);color:var(--muted)}
+.chip.part{background:#FBF7EE;border-color:#EFE6D4;color:var(--ink-soft)}
+.chip.mom{background:#EFE6EF;border-color:#E0D2E0;color:#7B5AA6}
+.chip.size{background:#F1EFEA;border-color:#E4E0D6;color:var(--muted)}
+.chip .color-dot{width:9px;height:9px}
 .overlay{position:fixed;inset:0;background:rgba(43,38,31,.45);z-index:60;overflow:auto;padding:20px 12px;-webkit-overflow-scrolling:touch}
 .overlay .modal{max-width:760px;margin:0 auto 40px}
 .overlay .modal>.card{box-shadow:0 18px 50px rgba(43,38,31,.35);border-color:var(--line)}
@@ -147,7 +159,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.2.4", stage: "Stage 2 — Courses & Assignments", schemaVersion: 5, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.2.5", stage: "Stage 2 — Courses & Assignments", schemaVersion: 5, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -661,24 +673,23 @@ function setYearArchived(y, flag){
   }
   render();
 }
-function addDateBlock(y, kind, name, start, end){       // kind: "breaks" | "terms"
+function addDateBlock(y, kind, name, start, end, quiet){   // kind: "breaks" | "terms"; quiet: editing a form clone
   name=(name||"").trim();
   if(!name || !start || !end){ toast("Name, start and end are all needed", true); return false; }
   if(end < start){ toast("The end date can't be before the start", true); return false; }
   y[kind].push({ id:uid(), name, start, end });
   y[kind].sort((a,b)=>a.start.localeCompare(b.start));
-  touchYear(y, (kind==="breaks"?"Break":"Term")+" added", name+" · "+y.label);
+  if(!quiet) touchYear(y, (kind==="breaks"?"Break":"Term")+" added", name+" · "+y.label);
   return true;
 }
-function removeDateBlock(y, kind, id){
+function removeDateBlock(y, kind, id, quiet){
   const b=y[kind].find(x=>x.id===id);
   y[kind]=y[kind].filter(x=>x.id!==id);
-  touchYear(y, (kind==="breaks"?"Break":"Term")+" removed", (b?b.name:"")+" · "+y.label);
+  if(!quiet) touchYear(y, (kind==="breaks"?"Break":"Term")+" removed", (b?b.name:"")+" · "+y.label);
 }
-function setGrade(y, personId, grade){
+function setGrade(y, personId, grade, quiet){
   if(grade) y.studentGrades[personId]=grade; else delete y.studentGrades[personId];
-  const p=State.data.people.find(x=>x.id===personId);
-  touchYear(y, "Grade set", (p?p.name:"?")+" → "+(grade||"none")+" · "+y.label);
+  if(!quiet){ const p=State.data.people.find(x=>x.id===personId); touchYear(y,"Grade set",(p?p.name:"?")+" → "+(grade||"—")+" · "+y.label); }
 }
 function touchYear(y, what, detail){ y.modifiedAt=nowISO(); markDirty(what, detail); }
 function activeYear(){ return State.data.schoolYears.find(y=>y.id===State.data.settings.activeSchoolYearId) || null; }
@@ -990,10 +1001,11 @@ function render(){
       el("div",{class:"save-status",id:"saveStatus"}))));
   renderSaveStatus();
   if(!State.data){ app.append(renderSetup(), el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage)); return; }
-  const tabs=[["home","Home"],["courses","Courses"],["people","People"],["year","School Year"],["data","Data & Backups"]];
+  const tabs=[["home","Home"],["courses","Courses"],["people","Students"],["year","School Year"],["data","Data & Backups"]];
   app.append(el("nav",{class:"tabs"},
     tabs.map(([id,label])=>el("button",{class:State.ui.screen===id?"active":"", onclick:()=>{State.ui.screen=id;render();}},label))));
   app.append({home:renderHome, courses:renderCourses, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
+  app.append(el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage));
   const modal=currentModal();                     // every add/edit form floats above its page — locked build preference
   if(modal) app.append(el("div",{class:"overlay"}, el("div",{class:"modal"}, modal)));
 }
@@ -1013,7 +1025,6 @@ function currentModal(){                          // explicit Save/Cancel only; 
   if(ui.screen==="year" && ui.yearFormOpen)
     return yearForm(State.data.schoolYears.find(y=>y.id===ui.editingYearId)||null);
   return null;
-  app.append(el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage));
 }
 function renderSaveStatus(){
   const n=document.getElementById("saveStatus"); if(!n) return;
@@ -1084,7 +1095,7 @@ function renderHome(){
         el("button",{class:"btn quiet",onclick:()=>{State.ui.screen="data";render();}},"Save a copy…"))));
   }
   const items=[
-    ["People", d.people.length? d.people.length+" added — "+d.people.map(p=>p.name).join(", ") : "none yet", "people", d.people.length>0],
+    ["Students", d.people.length? d.people.length+" added — "+d.people.map(p=>p.name).join(", ") : "none yet", "people", d.people.length>0],
     ["School year", y? y.label+" · Cycle "+y.cycle+y.ttVariant+" · "+fmtDate(y.startDate)+" – "+fmtDate(y.endDate) : "none yet", "year", !!y],
     ["Courses", d.courses.length? d.courses.length+" course"+(d.courses.length===1?"":"s")+" · "+d.assignments.length+" assignment"+(d.assignments.length===1?"":"s") : "none yet — add your first on the Courses tab", "courses", d.courses.length>0],
     ["Data & backups", State.storage.mode==="folder" ? "Saving automatically to your folder" : "Kept in this browser — save a copy to Files when you finish", "data", true]
@@ -1103,6 +1114,40 @@ function renderHome(){
   return wrap;
 }
 /* --- 6.4 Courses & assignments --- */
+/* Tiny inline SVG icons — crisp at 12px, colored by the chip they sit in */
+const ICONS={
+  book:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+  cycle:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>',
+  tag:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1.3"/></svg>',
+  cal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>',
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+  home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>'
+};
+function icon(name){ const sp=document.createElement("span"); sp.className="ic"; sp.innerHTML=ICONS[name]||""; return sp; }
+
+function courseChips(c){                          // the card's meta, in the owner's three groups
+  const n=courseAssignments(c.id).length;
+  const yr=State.data.schoolYears.find(y=>y.id===c.yearId) || activeYear();
+  /* group 1 — what it is: subject→focus · cycle · category */
+  const g1=el("span",{class:"chip-group"},
+    c.subject?el("span",{class:"chip acad"},icon("book"),c.subject+(c.focus?" → "+c.focus:"")):null,
+    c.cycle?el("span",{class:"chip cyc"},icon("cycle"),"Cycle "+c.cycle):null,
+    el("span",{class:"chip cat"},icon("tag"),c.category));
+  /* group 2 — who: students (with grade when known) or the whole family, plus the Mom flag */
+  const g2=el("span",{class:"chip-group"});
+  if(c.type==="family") g2.append(el("span",{class:"chip part"},icon("home"),"Whole family"));
+  else courseStudents(c).forEach(s=>{
+    const grade=yr?yr.studentGrades[s.id]:null;
+    g2.append(el("span",{class:"chip part"},el("span",{class:"color-dot",style:"background:"+s.color}),s.name+(grade?" · "+grade:"")));
+  });
+  if(c.parentLed) g2.append(el("span",{class:"chip mom"},"Mom"));
+  /* group 3 — how big: length · assignment count */
+  const g3=el("span",{class:"chip-group"},
+    c.weeks?el("span",{class:"chip size"},icon("cal"),c.weeks+"w × "+dpw(c)+"d"):null,
+    el("span",{class:"chip size"},icon("check"),n+""));
+  return el("div",{class:"chip-groups"},g1,g2,g3);
+}
+
 function renderCourses(){
   const sel = State.ui.selectedCourseId ? courseById(State.ui.selectedCourseId) : null;
   if(sel) return courseDetail(sel);
@@ -1117,21 +1162,11 @@ function renderCourses(){
   if(!total) card.append(el("div",{class:"empty"},"No courses yet — add your first above (piano practice is a fine place to start)."));
   const list=coursesAll();
   list.forEach((c,i)=>{
-    const n=courseAssignments(c.id).length;
-    const kids=courseStudents(c).map(s=>s.name).join(", ");
-    const pills=el("div",{class:"row",style:"gap:6px;flex-wrap:wrap;margin-top:3px"},
-      c.subject?el("span",{class:"pill gold"},c.subject+(c.focus?" → "+c.focus:"")):null,
-      el("span",{class:"pill gray"},{individual:"Individual",group:"Group",family:"Family"}[c.type]+(kids?" · "+kids:"")),
-      c.weeks?el("span",{class:"pill gray"},c.weeks+"w × "+dpw(c)+"d"):null,
-      c.cycle?el("span",{class:"pill gray"},"Cycle "+c.cycle):null,
-      el("span",{class:"pill gray"},n+" assignment"+(n===1?"":"s")),
-      c.parentLed?el("span",{class:"pill"},"Mom"):null);
     card.append(el("div",{class:"list-item"},
       el("div",{class:"li-main"},
         el("div",{class:"row"},el("div",{class:"li-name"},c.name),
-          el("span",{class:"pill"},c.category),
           c.status!=="active"?el("span",{class:"pill gray"},c.status):null),
-        pills),
+        courseChips(c)),
       el("button",{class:"btn quiet small",disabled:i===0,onclick:()=>moveCourse(c,-1),"aria-label":"Move "+c.name+" up"},"↑"),
       el("button",{class:"btn quiet small",disabled:i===list.length-1,onclick:()=>moveCourse(c,1),"aria-label":"Move "+c.name+" down"},"↓"),
       el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.quickAddOpen=false;State.ui.courseFormOpen=false;render();}},"View"),
@@ -1161,21 +1196,15 @@ function courseDetail(c){
   wrap.append(el("div",{class:"spread",style:"margin:6px 0 10px"},
     el("button",{class:"btn quiet small",onclick:()=>{State.ui.selectedCourseId=null;State.ui.courseFormOpen=false;render();}},"‹ All courses"),
     el("button",{class:"btn small",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add an assignment")));
-  const kids=courseStudents(c).map(s=>s.name).join(", ");
   const yr=State.data.schoolYears.find(y=>y.id===c.yearId);
   const head=el("div",{class:"card"});
   head.append(el("div",{class:"spread"},
-    el("div",{},
+    el("div",{style:"min-width:0"},
       el("div",{class:"row"},el("h3",{style:"margin:0"},c.name),
-        c.parentLed?el("span",{class:"pill"},"Mom"):null,
         c.status!=="active"?el("span",{class:"pill gray"},c.status):null),
-      el("div",{class:"li-sub"},[
-        c.category + (c.subject? " · "+c.subject+(c.focus?" → "+c.focus:"") : ""),
-        {individual:"Individual",group:"Group",family:"Family"}[c.type] + (kids?": "+kids:""),
-        c.weeks?c.weeks+" weeks × "+dpw(c)+" days":null,
-        c.cycle?"Cycle "+c.cycle:null, yr?yr.label:null,
-        c.lessonMinutes?"~"+c.lessonMinutes+" min":null
-      ].filter(Boolean).join(" · "))),
+      courseChips(c),
+      (yr||c.lessonMinutes)?el("div",{class:"li-sub",style:"margin-top:5px"},
+        [yr?yr.label:null, c.lessonMinutes?"~"+c.lessonMinutes+" min/lesson":null].filter(Boolean).join(" · ")):null),
     el("div",{class:"row"},
       el("button",{class:"btn quiet small",onclick:()=>{State.ui.editingCourseId=c.id;State.ui.courseFormOpen=true;render();}},"Edit course"),
       el("button",{class:"btn danger small",onclick:()=>deleteCourse(c)},"Delete"))));
@@ -1299,7 +1328,7 @@ function courseForm(existing){
       el("span",{class:"color-dot",style:"background:"+s.color}), s.name);
     studentsBox.append(lab);
   });
-  if(!students().length) studentsBox.append(el("span",{class:"li-sub"},"No students yet — add them on the People tab."));
+  if(!students().length) studentsBox.append(el("span",{class:"li-sub"},"No students yet — add them on the Students tab."));
   const studentsWrap=el("label",{class:"field",style:c.type==="family"?"display:none":""},"Students",studentsBox);
   const yearSel=el("select",{onchange:e=>c.yearId=e.target.value||null},
     el("option",{value:"",selected:!c.yearId},"— no school year yet —"),
@@ -1525,8 +1554,8 @@ function assignmentForm(course, existing){
 /* --- 6.5 People screen --- */
 function renderPeople(){
   const wrap=el("div",{});
-  wrap.append(el("h2",{class:"screen-title"},"People"),
-    el("p",{class:"screen-note"},"Students and the parent participant. Each student carries a color, an enrollment status, and a grade level per school year (set on the School Year tab)."));
+  wrap.append(el("h2",{class:"screen-title"},"Students"),
+    el("p",{class:"screen-note"},"Your students — and the parent participant, who lives here too. Each student carries a color, an enrollment status, and a grade level per school year (set on the School Year tab)."));
   wrap.append(el("div",{class:"row",style:"margin:2px 0 12px"},
     el("button",{class:"btn",onclick:()=>{State.ui.editingPersonId=null;State.ui.personFormOpen=true;render();}},"Add Student")));
   const list=el("div",{class:"card"});
@@ -1604,23 +1633,71 @@ function renderYears(){
   wrap.append(card);
   return wrap;
 }
-function yearDetails(y){                          // the View expansion: living editors for the year's contents
-  return el("div",{style:"padding:10px 4px 14px;border-bottom:1px solid var(--line-soft)"},
-    el("div",{class:"stack"},
-      el("label",{class:"field"},"School days of the week",weekdayPicker(y)),
-      gradesEditor(y),
-      dateBlockEditor(y,"breaks","Breaks & vacations","e.g. Christmas Break"),
-      dateBlockEditor(y,"terms","Terms (optional)","e.g. Term 1")));
+function yearDetails(y){                          // the View expansion — read-only; all editing lives in the Edit pop-up
+  const box=el("div",{style:"padding:10px 4px 14px;border-bottom:1px solid var(--line-soft)"});
+  const stack=el("div",{class:"stack"});
+  stack.append(el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:4px"},"School days of the week"),
+    el("div",{class:"li-sub"}, y.weekdayPattern.length? y.weekdayPattern.map(i=>WEEKDAY_NAMES[i]).join(" · ") : "—")));
+  const g=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:4px"},"Grade levels this year"));
+  if(!students().length) g.append(el("div",{class:"li-sub"},"No students yet."));
+  else students().forEach(st=>g.append(el("div",{class:"row",style:"gap:8px;padding:2px 0"},
+    el("span",{class:"color-dot",style:"background:"+st.color}),
+    el("span",{style:"font-size:14px"},st.name),
+    el("span",{class:"li-sub"},y.studentGrades[st.id]||"— not in this year —"))));
+  stack.append(g);
+  [["breaks","Breaks & vacations"],["terms","Terms (optional)"]].forEach(([kind,title])=>{
+    const b=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:4px"},title));
+    if(!y[kind].length) b.append(el("div",{class:"li-sub"},"None."));
+    y[kind].forEach(k=>b.append(el("div",{class:"li-sub",style:"padding:1px 0"},k.name+" — "+fmtDate(k.start)+" – "+fmtDate(k.end))));
+    stack.append(b);
+  });
+  stack.append(el("p",{class:"li-sub",style:"margin:2px 0 0"},"To change any of this, use the Edit button."));
+  box.append(stack);
+  return box;
 }
 function yearForm(existing){
   const y = existing ? deepClone(existing) : newSchoolYear();
-  const card=el("div",{class:"card"},el("h3",{},existing?"Edit "+existing.label:"New school year"));
+  const card=el("div",{class:"card"},el("h3",{},existing?"Edit "+existing.label:"New school year"),
+    el("p",{class:"screen-note"},"Everything about the year lives here — dates, weekday pattern, grade levels, breaks and terms. Nothing is saved until you press "+(existing?"Save changes":"Create year")+"."));
   const labelIn=el("input",{type:"text",value:y.label,placeholder:"e.g. 2026–2027",oninput:e=>y.label=e.target.value});
   const startIn=el("input",{type:"date",value:y.startDate,onchange:e=>{y.startDate=e.target.value; if(!labelIn.value){labelIn.value=yearLabelFromDate(y.startDate);y.label=labelIn.value;}}});
   const endIn=el("input",{type:"date",value:y.endDate,onchange:e=>y.endDate=e.target.value});
   const cycleSel=el("select",{onchange:e=>y.cycle=Number(e.target.value)},CYCLES.map(c=>el("option",{value:c,selected:y.cycle===c},"Cycle "+c)));
   const varSel=el("select",{onchange:e=>y.ttVariant=e.target.value},TT_VARIANTS.map(v=>el("option",{value:v,selected:y.ttVariant===v},"Variant "+v+(v==="A"?" (first pass)":" (second pass)"))));
   const targetIn=el("input",{type:"number",min:"1",value:y.targetDays,onchange:e=>y.targetDays=Number(e.target.value)||DEFAULTS.targetDays});
+
+  /* grade levels — mutates the clone; saved with the year */
+  const gradesBox=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:6px"},"Grade levels this year"));
+  if(!students().length) gradesBox.append(el("div",{class:"li-sub"},"Add students on the Students tab first."));
+  else students().forEach(st=>{
+    gradesBox.append(el("div",{class:"row",style:"gap:8px;padding:2px 0;align-items:center"},
+      el("span",{class:"color-dot",style:"background:"+st.color}),
+      el("span",{style:"font-size:14px;min-width:90px"},st.name),
+      el("select",{onchange:e=>setGrade(y,st.id,e.target.value,true)},
+        el("option",{value:"",selected:!y.studentGrades[st.id]},"— not in this year —"),
+        GRADE_LEVELS.map(g=>el("option",{value:g,selected:y.studentGrades[st.id]===g},g)))));
+  });
+
+  /* breaks & terms — self-contained editors on the clone (repaint locally, never a global render) */
+  function blocksBox(kind,title,placeholder){
+    const box=el("div",{});
+    function paint(){
+      clear(box);
+      box.append(el("div",{class:"eyebrow",style:"margin-bottom:6px"},title));
+      y[kind].forEach(b=>box.append(el("div",{class:"list-item"},
+        el("div",{class:"li-main"},el("div",{class:"li-name"},b.name),el("div",{class:"li-sub"},fmtDate(b.start)+" – "+fmtDate(b.end))),
+        el("button",{class:"btn danger small",onclick:()=>{removeDateBlock(y,kind,b.id,true);paint();}},"Remove"))));
+      if(!y[kind].length) box.append(el("div",{class:"li-sub",style:"padding:4px 0 8px"},"None yet."));
+      const nameIn=el("input",{type:"text",placeholder}), sIn=el("input",{type:"date"}), eIn=el("input",{type:"date"});
+      box.append(el("div",{class:"row",style:"margin-top:6px"},
+        el("div",{style:"flex:2;min-width:140px"},nameIn),
+        el("div",{style:"flex:1;min-width:130px"},sIn),
+        el("div",{style:"flex:1;min-width:130px"},eIn),
+        el("button",{class:"btn secondary small",onclick:()=>{ if(addDateBlock(y,kind,nameIn.value,sIn.value,eIn.value,true)) paint(); }},"Add")));
+    }
+    paint(); return box;
+  }
+
   card.append(el("div",{class:"stack"},
     el("div",{class:"grid2"},
       el("label",{class:"field"},"Label",labelIn),
@@ -1630,10 +1707,15 @@ function yearForm(existing){
       el("label",{class:"field"},"Curriculum cycle",cycleSel),
       el("label",{class:"field"},"Together Time variant",varSel)),
     el("label",{class:"field"},el("div",{},"School days of the week ", el("span",{class:"hint"},"used only to place work on the calendar — skipping a day is always one tap later")), weekdayPicker(y,true)),
+    gradesBox,
+    blocksBox("breaks","Breaks & vacations","e.g. Christmas Break"),
+    blocksBox("terms","Terms (optional)","e.g. Term 1"),
     el("div",{class:"row"},
       el("button",{class:"btn",onclick:()=>{
         if(existing){
-          const fields={label:y.label,startDate:y.startDate,endDate:y.endDate,cycle:y.cycle,ttVariant:y.ttVariant,targetDays:y.targetDays,weekdayPattern:[...y.weekdayPattern]};
+          const fields={label:y.label,startDate:y.startDate,endDate:y.endDate,cycle:y.cycle,ttVariant:y.ttVariant,
+            targetDays:y.targetDays,weekdayPattern:[...y.weekdayPattern],
+            studentGrades:deepClone(y.studentGrades),breaks:deepClone(y.breaks),terms:deepClone(y.terms)};
           const before=deepClone(existing); Object.assign(existing,fields);
           if(!saveYear(existing,false)){ Object.assign(existing,before); return; }
         } else if(!saveYear(y,true)) return;
@@ -1659,34 +1741,6 @@ function weekdayPicker(y, silent){               // silent: editing a form clone
   });
   return row;
 }
-function gradesEditor(y){
-  const box=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:6px"},"Grade levels this year"));
-  if(!students().length) return box.append(el("div",{class:"li-sub"},"Add students on the People tab first.")),box;
-  const tbl=el("table",{class:"plain"});
-  students().forEach(s=>{
-    tbl.append(el("tr",{},
-      el("td",{style:"width:40%"},el("span",{class:"row"},el("span",{class:"color-dot",style:"background:"+s.color}),s.name)),
-      el("td",{},el("select",{onchange:e=>setGrade(y,s.id,e.target.value)},
-        el("option",{value:"",selected:!y.studentGrades[s.id]},"— not in this year —"),
-        GRADE_LEVELS.map(g=>el("option",{value:g,selected:y.studentGrades[s.id]===g},g))))));
-  });
-  box.append(tbl); return box;
-}
-function dateBlockEditor(y,kind,title,placeholder){
-  const box=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:6px"},title));
-  y[kind].forEach(b=>box.append(el("div",{class:"list-item"},
-    el("div",{class:"li-main"},el("div",{class:"li-name"},b.name),el("div",{class:"li-sub"},fmtDate(b.start)+" – "+fmtDate(b.end))),
-    el("button",{class:"btn danger small",onclick:()=>{removeDateBlock(y,kind,b.id);render();}},"Remove"))));
-  if(!y[kind].length) box.append(el("div",{class:"li-sub",style:"padding:4px 0 8px"},"None yet."));
-  const nameIn=el("input",{type:"text",placeholder}), sIn=el("input",{type:"date"}), eIn=el("input",{type:"date"});
-  box.append(el("div",{class:"row",style:"margin-top:6px"},
-    el("div",{style:"flex:2;min-width:140px"},nameIn),
-    el("div",{style:"flex:1;min-width:130px"},sIn),
-    el("div",{style:"flex:1;min-width:130px"},eIn),
-    el("button",{class:"btn secondary small",onclick:()=>{ if(addDateBlock(y,kind,nameIn.value,sIn.value,eIn.value)) render(); }},"Add")));
-  return box;
-}
-
 /* --- 6.7 Data & Backups screen --- */
 function renderData(){
   const wrap=el("div",{});
