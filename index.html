@@ -124,7 +124,8 @@ table.plain th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;colo
 .weekday-row label.on{background:var(--spruce-soft);border-color:var(--spruce);color:var(--spruce-dark)}
 .weekday-row input{position:absolute;opacity:0}
 details.adv{margin-top:8px}
-.seq{font-family:var(--font-mono);font-size:13px;color:var(--muted);min-width:30px;text-align:right;flex:none}
+.seq{font-family:var(--font-mono);font-size:12.5px;color:var(--muted);min-width:52px;text-align:right;flex:none}
+.week-head{margin:14px 0 2px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700;border-bottom:1px solid var(--line-soft);padding-bottom:4px}
 .app-footer{text-align:center;color:var(--muted);font-size:12px;font-family:var(--font-mono);padding:26px 0 4px;letter-spacing:.04em}
 details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight:600}
 </style>
@@ -143,7 +144,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.2.1", stage: "Stage 2 — Courses & Assignments", schemaVersion: 3, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.2.2", stage: "Stage 2 — Courses & Assignments", schemaVersion: 4, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -235,6 +236,13 @@ function clear(n){ while(n.firstChild) n.removeChild(n.firstChild); return n; }
 
 /* --- 2.4 Misc --- */
 function deepClone(o){ return JSON.parse(JSON.stringify(o)); }
+function normalizeLink(u){          // "www.amazon.com" → "https://www.amazon.com" (bare links otherwise open as relative paths → 404)
+  u=(u||"").trim();
+  if(!u) return "";
+  if(/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u)) return u;   // has a scheme (https:, mailto:, …)
+  if(u.startsWith("//")) return "https:"+u;
+  return "https://"+u;
+}
 function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
 function toast(msg, warn){ const t=el("div",{class:"toast"+(warn?" warn":"")},msg);
   document.getElementById("toasts").append(t); setTimeout(()=>t.remove(), warn?5200:3200); }
@@ -293,7 +301,8 @@ function newCourse(){ const t=nowISO(); return { id:uid(), createdAt:t, modified
   parentLed:false,
   source:"custom",                  // e.g. "LHP Cycle 1 Basic — 1st Grade" once imports exist
   yearId: State.data?.settings.activeSchoolYearId || null,
-  cadence:null,                     // times per week (scheduling uses this in Stage 3)
+  weeks:32,                         // the course's own length in weeks (positions, not calendar — Stage 3 projects onto dates)
+  cadence:5,                        // days per week — the width of the course's week/day grid; scheduling projects it in Stage 3
   lessonMinutes:null,               // typical lesson length
   links:[],                         // resource links (one URL per line in the form)
   notes:"", sortPos:0,              // manual sort order within its category (v5, P1 groundwork)
@@ -304,7 +313,9 @@ function newAssignment(courseId){ const t=nowISO(); return { id:uid(), createdAt
   subjectOverride:"", focusOverride:"",   // inherit the course's labels unless set (v5)
   link:"", minutes:null, tags:[], notes:"",
   narrationExpected:false, narrationPrompt:"",
-  batchId:null, batchN:null }; }    // series membership: created-together assignments share a batchId; batchN is this row's number
+  week:1, day:1,                    // position in the course's own grid: "Week 3, Day 2" of the course, never a calendar date
+  batchId:null, batchN:null,        // series membership: created-together assignments share a batchId; batchN is this row's number
+  seriesRule:null }; }              // recurring definition, kept on every member: {slots,fromWeek,toWeek,everyN,numbered}
 
 /* --- 3.3 Change tracking, autosave trigger & activity log --- */
 function logActivity(what, detail){
@@ -340,6 +351,22 @@ function upgradeSchema(data){
       case 2:  // v3: assignments carry series membership (batchId/batchN)
         (data.assignments||[]).forEach(a=>{ if(!("batchId" in a)) a.batchId=null; if(!("batchN" in a)) a.batchN=null; });
         data.schemaVersion = 3; break;
+      case 3:  // v4: week/day grid — courses get weeks + days-per-week; assignments get a
+               // grid position (derived from their old sequence number) and a series rule slot;
+               // links are normalized (bare "www…" links used to 404 as relative paths).
+        (data.courses||[]).forEach(c=>{
+          if(!("weeks" in c) || !c.weeks) c.weeks=32;
+          if(!c.cadence) c.cadence=5;
+          c.links=(c.links||[]).map(normalizeLink);
+        });
+        (data.assignments||[]).forEach(a=>{
+          const c=(data.courses||[]).find(x=>x.id===a.courseId);
+          const dpw=Math.min(7,Math.max(1,(c&&c.cadence)||5));
+          if(!("week" in a) || !a.week){ a.week=Math.floor((a.seq-1)/dpw)+1; a.day=((a.seq-1)%dpw)+1; }
+          if(!("seriesRule" in a)) a.seriesRule=null;
+          a.link=normalizeLink(a.link);
+        });
+        data.schemaVersion = 4; break;
       default: data.schemaVersion = APP.schemaVersion;   // nothing to do
     }
   }
@@ -658,6 +685,7 @@ function saveCourse(c, isNew){
   if(!c.name){ toast("Please give the course a name", true); return false; }
   if(!c.category){ toast("Please pick a category", true); return false; }
   if(c.type==="family") c.studentIds=[];
+  c.links=(c.links||[]).map(normalizeLink);
   if(isNew){
     c.sortPos = Math.max(0, ...coursesInCategory(c.category).map(x=>x.sortPos)) + 1;
     State.data.courses.push(c);
@@ -688,12 +716,19 @@ function courseStudents(c){
 }
 
 /* --- 5.5 Assignments & repeating rules --- */
+function dpw(c){ return Math.min(7, Math.max(1, c.cadence||5)); }          // days per week (grid width)
+function weeksOf(c){ const m=Math.max(0,...courseAssignments(c.id).map(a=>a.week||0)); return Math.max(c.weeks||0, m) || 32; }
+function posKey(a){ return (a.week||9999)*100000 + (a.day||99)*1000; }       // sort by week, then day…
 function courseAssignments(courseId){
-  return State.data.assignments.filter(a=>a.courseId===courseId).sort((a,b)=>a.seq-b.seq);
+  return State.data.assignments.filter(a=>a.courseId===courseId)
+    .sort((a,b)=>(posKey(a)-posKey(b)) || (a.seq-b.seq));                    // …then stable order within a day
 }
 function resequence(courseId){ courseAssignments(courseId).forEach((a,i)=>a.seq=i+1); }
+function prevSlot(w,d,width){ return d>1 ? [w,d-1] : [w-1,width]; }
+function nextSlot(w,d,width){ return d<width ? [w,d+1] : [w+1,1]; }
 function saveAssignment(a, isNew){
   a.title=a.title.trim();
+  a.link=normalizeLink(a.link);
   if(!a.title){ toast("Please give the assignment a title", true); return false; }
   if(a.subjectOverride==="") a.focusOverride=a.focusOverride||"";   // focus-only overrides are allowed
   if(isNew){ a.seq = courseAssignments(a.courseId).length + 1; State.data.assignments.push(a); }
@@ -710,72 +745,171 @@ function deleteAssignment(a){
   markDirty("Assignment deleted", (c?c.name+" · ":"")+a.title);
   render();
 }
-function moveAssignment(a, dir){                // slide up/down to reorder the teaching sequence (v5)
+function moveAssignment(a, dir){   // slide in the grid: swap within a day, or step into the neighboring day slot
+  const c=courseById(a.courseId), width=dpw(c);
   const list=courseAssignments(a.courseId);
   const i=list.indexOf(a), j=i+dir;
-  if(j<0 || j>=list.length) return;
-  [list[i].seq, list[j].seq] = [list[j].seq, list[i].seq];
-  markDirty();                                   // stamps modified; no log entry per nudge
+  const neighbor=(j>=0 && j<list.length)?list[j]:null;
+  if(neighbor && neighbor.week===a.week && neighbor.day===a.day){
+    [a.seq, neighbor.seq]=[neighbor.seq, a.seq];                 // reorder within the same day
+  } else if(dir<0){
+    const [w,d]=prevSlot(a.week,a.day,width);
+    if(w<1) return;
+    a.week=w; a.day=d; a.seq=neighbor?neighbor.seq+0.25:0;       // becomes last in the previous day
+  } else {
+    const [w,d]=nextSlot(a.week,a.day,width);
+    a.week=w; a.day=d; a.seq=neighbor?neighbor.seq-0.25:a.seq+1; // becomes first in the next day
+  }
+  resequence(a.courseId);
+  markDirty();                                                    // stamps modified; no log entry per nudge
   render();
+}
+function placeAt(a, week, day){                 // direct placement (the edit form's Week/Day fields)
+  week=Math.max(1,Math.floor(week)||1); day=Math.max(1,Math.floor(day)||1);
+  if(a.week===week && a.day===day) return;
+  const slotRows=courseAssignments(a.courseId).filter(x=>x.week===week && x.day===day && x.id!==a.id);
+  a.week=week; a.day=day;
+  a.seq=slotRows.length?Math.max(...slotRows.map(x=>x.seq))+0.25:a.seq;   // last within its new day
+  resequence(a.courseId);
 }
 function effectiveLabels(a, c){                  // what the completion record will one day snapshot
   if(a.subjectOverride) return { subject:a.subjectOverride, focus:a.focusOverride||"" };
   return { subject:c.subject, focus:a.focusOverride||c.focus };
 }
-/* Repeating rules (v5 P0), now as “series”: assignments created together share a
-   batchId; batchN holds each row's number. {n} in a title becomes the number;
-   without {n}, every copy keeps the same title (memory-work style). */
-function seriesTitle(pattern, n){ return pattern.includes("{n}") ? pattern.replaceAll("{n}", n) : pattern; }
+/* Repeating rules (v5 P0) as recurring series on the course's week/day grid.
+   A rule — repeat on these days, from week X through week Y, every N weeks —
+   generates one row per occurrence; members share a batchId and each carries
+   the rule, so a series can be edited as one thing (header/detail style) and
+   extended or shortened later. Titles: automatic numbering is a checkbox;
+   {n} in a title is still honored for patterns like "Chapter {n}". */
+function seriesTitle(base, n, numbered){
+  return base.includes("{n}") ? base.replaceAll("{n}", n) : (numbered ? base+" "+n : base);
+}
 function seriesMembers(batchId){ return State.data.assignments.filter(a=>a.batchId===batchId).sort((a,b)=>a.seq-b.seq); }
-function createSeries(courseId, tmpl, count, start){   // append `count` rows built from the form's template
-  count=Math.max(1, Math.min(500, Math.floor(count)||1));
-  const startN=Number.isFinite(start)?Math.floor(start):1;
-  const bid = count>1 ? uid() : null;
-  let seq=courseAssignments(courseId).length;
-  for(let i=0;i<count;i++){
-    const a=newAssignment(courseId);
-    Object.assign(a,{ description:tmpl.description, type:tmpl.type,
-      subjectOverride:tmpl.subjectOverride, focusOverride:tmpl.focusOverride,
-      link:tmpl.link, minutes:tmpl.minutes, tags:[...tmpl.tags], notes:tmpl.notes,
-      narrationExpected:tmpl.narrationExpected, narrationPrompt:tmpl.narrationPrompt });
-    a.title=seriesTitle(tmpl.title, startN+i);
-    a.batchId=bid; a.batchN=bid?startN+i:null;
-    a.seq=++seq;
-    State.data.assignments.push(a);
-  }
+function ruleOccurrences(rule){                  // → ordered [week, day] pairs the rule covers
+  const out=[]; const slots=[...rule.slots].sort((x,y)=>x-y);
+  for(let w=rule.fromWeek; w<=rule.toWeek; w+=rule.everyN) slots.forEach(d=>out.push([w,d]));
+  return out;
+}
+const SERIES_FIELDS=["description","type","subjectOverride","focusOverride","link","minutes","tags","notes","narrationExpected","narrationPrompt"];
+function fillFromTemplate(row, tmpl){
+  SERIES_FIELDS.forEach(f=>{ row[f]=Array.isArray(tmpl[f])?[...tmpl[f]]:tmpl[f]; });
+  row.link=normalizeLink(row.link);
+}
+function createSingle(courseId, tmpl, week, day){
+  const a=newAssignment(courseId);
+  fillFromTemplate(a,tmpl); a.title=tmpl.title;
+  a.week=1; a.day=1; a.seq=1e9;                  // placeAt sorts it into its true slot
+  State.data.assignments.push(a);
+  placeAt(a, week, day);
   const c=courseById(courseId);
-  markDirty(count>1?"Series of assignments added":"Assignment added",
-    (c?c.name+" · ":"")+(count>1?count+" × “"+tmpl.title+"”":tmpl.title));
-  return count;
+  markDirty("Assignment added",(c?c.name+" · ":"")+a.title+" (Week "+a.week+", Day "+a.day+")");
+  return a;
 }
-function extendToSeries(a, more, start){         // make copies of an existing assignment, right after it
-  more=Math.max(1, Math.min(500, Math.floor(more)||1));
-  const startN=Number.isFinite(start)?Math.floor(start):2;
-  if(!a.batchId){ a.batchId=uid(); if(a.batchN==null) a.batchN=startN-1; }
-  for(let i=0;i<more;i++){
-    const copy=newAssignment(a.courseId);
-    Object.assign(copy,{ description:a.description, type:a.type,
-      subjectOverride:a.subjectOverride, focusOverride:a.focusOverride,
-      link:a.link, minutes:a.minutes, tags:[...a.tags], notes:a.notes,
-      narrationExpected:a.narrationExpected, narrationPrompt:a.narrationPrompt });
-    copy.title=seriesTitle(a.title, startN+i);
-    copy.batchId=a.batchId; copy.batchN=startN+i;
-    copy.seq=a.seq + (i+1)/(more+1);             // fractional — lands the copies right after the original…
-    State.data.assignments.push(copy);
-  }
-  resequence(a.courseId);                        // …then whole numbers are restored
+function createRecurring(courseId, tmpl, rule){
+  rule={ slots:[...new Set(rule.slots)].filter(d=>d>=1), fromWeek:Math.max(1,Math.floor(rule.fromWeek)||1),
+         toWeek:Math.max(1,Math.floor(rule.toWeek)||1), everyN:Math.max(1,Math.floor(rule.everyN)||1),
+         numbered:!!rule.numbered };
+  if(!rule.slots.length){ toast("Pick at least one day of the week to repeat on", true); return 0; }
+  if(rule.toWeek<rule.fromWeek){ toast("“Through week” can't be before “from week”", true); return 0; }
+  const occ=ruleOccurrences(rule);
+  if(occ.length>1000){ toast("That's "+occ.length+" assignments — over the 1,000 safety cap", true); return 0; }
+  const bid=uid(); let n=0, seq=1e9;
+  occ.forEach(([w,d])=>{
+    n++;
+    const a=newAssignment(courseId);
+    fillFromTemplate(a,tmpl);
+    a.title=seriesTitle(tmpl.title, n, rule.numbered);
+    a.week=w; a.day=d; a.seq=seq++;
+    a.batchId=bid; a.batchN=n; a.seriesRule=deepClone(rule);
+    State.data.assignments.push(a);
+  });
+  resequence(courseId);
+  const c=courseById(courseId);
+  markDirty("Recurring series added",(c?c.name+" · ":"")+n+" × “"+tmpl.title+"” (weeks "+rule.fromWeek+"–"+rule.toWeek+")");
+  return n;
+}
+function convertToRecurring(a, rule){            // an existing single becomes the series' first matching occurrence
+  const before=courseAssignments(a.courseId).length;
+  rule={ slots:[...new Set(rule.slots)].filter(d=>d>=1), fromWeek:Math.max(1,Math.floor(rule.fromWeek)||1),
+         toWeek:Math.max(1,Math.floor(rule.toWeek)||1), everyN:Math.max(1,Math.floor(rule.everyN)||1),
+         numbered:!!rule.numbered };
+  if(!rule.slots.length){ toast("Pick at least one day of the week to repeat on", true); return 0; }
+  if(rule.toWeek<rule.fromWeek){ toast("“Through week” can't be before “from week”", true); return 0; }
+  const occ=ruleOccurrences(rule);
+  if(occ.length>1000){ toast("That's "+occ.length+" assignments — over the 1,000 safety cap", true); return 0; }
+  const bid=uid(); let n=0, used=false;
+  occ.forEach(([w,d])=>{
+    n++;
+    if(!used && w===a.week && d===a.day){        // the original keeps its slot
+      a.batchId=bid; a.batchN=n; a.seriesRule=deepClone(rule);
+      a.title=seriesTitle(a.title, n, rule.numbered);
+      used=true; return;
+    }
+    const row=newAssignment(a.courseId);
+    fillFromTemplate(row,a);
+    row.title=seriesTitle(a.title, n, rule.numbered);
+    row.week=w; row.day=d; row.seq=1e9+n;
+    row.batchId=bid; row.batchN=n; row.seriesRule=deepClone(rule);
+    State.data.assignments.push(row);
+  });
+  if(!used){ a.batchId=bid; a.batchN=0; a.seriesRule=deepClone(rule); }   // original outside the pattern still belongs
+  resequence(a.courseId);
   const c=courseById(a.courseId);
-  markDirty("Assignment turned into a series", (c?c.name+" · ":"")+a.title+" +"+more);
-  return more;
+  const made=courseAssignments(a.courseId).length-before;
+  markDirty("Assignment made recurring",(c?c.name+" · ":"")+a.title+" +"+made);
+  return made;
 }
-function renameSeries(batchId, pattern){
-  pattern=(pattern||"").trim();
-  if(!pattern){ toast("Please type the new title — use {n} where the number goes", true); return false; }
-  const members=seriesMembers(batchId);
-  members.forEach(m=>{ m.title=seriesTitle(pattern, m.batchN!=null?m.batchN:""); m.modifiedAt=nowISO(); });
-  const c=members.length?courseById(members[0].courseId):null;
-  markDirty("Series renamed", (c?c.name+" · ":"")+members.length+" × “"+pattern+"”");
-  return true;
+function applySeriesEdits(original, edited){     // header-style editing: changed fields flow to every member
+  const base=deepClone(original);                // snapshot first — original is itself a member and gets mutated below
+  const members=seriesMembers(original.batchId);
+  const titleChanged = edited.title!==base.title;
+  members.forEach(m=>{
+    SERIES_FIELDS.forEach(f=>{
+      const was=base[f], now=edited[f];
+      if(JSON.stringify(was)!==JSON.stringify(now)) m[f]=Array.isArray(now)?[...now]:now;
+    });
+    m.link=normalizeLink(m.link);
+    if(titleChanged) m.title=seriesTitle(edited.title, m.batchN, m.seriesRule?m.seriesRule.numbered:false);
+    m.modifiedAt=nowISO();
+  });
+  const c=courseById(original.courseId);
+  markDirty("Series updated",(c?c.name+" · ":"")+members.length+" assignments");
+}
+function changeSeriesEnd(member, newToWeek){     // extend or shorten a recurring series
+  const rule=member.seriesRule; if(!rule) return 0;
+  newToWeek=Math.max(rule.fromWeek, Math.floor(newToWeek)||rule.toWeek);
+  const members=seriesMembers(member.batchId);
+  const courseId=member.courseId;
+  let delta=0;
+  if(newToWeek<rule.toWeek){
+    const goners=members.filter(m=>m.week>newToWeek);
+    delta=-goners.length;
+    State.data.assignments=State.data.assignments.filter(a=>!(a.batchId===member.batchId && a.week>newToWeek));
+  } else if(newToWeek>rule.toWeek){
+    const tmpl=members[members.length-1];
+    let n=Math.max(0,...members.map(m=>m.batchN||0));
+    const baseTitle = tmpl.seriesRule && tmpl.seriesRule.numbered
+      ? tmpl.title.replace(new RegExp("\\s"+tmpl.batchN+"$"),"") : tmpl.title;
+    for(let w=rule.fromWeek; w<=newToWeek; w+=rule.everyN){
+      if(w<=rule.toWeek) continue;
+      [...rule.slots].sort((x,y)=>x-y).forEach(d=>{
+        n++; delta++;
+        const row=newAssignment(courseId);
+        fillFromTemplate(row,tmpl);
+        row.title=seriesTitle(baseTitle, n, rule.numbered);
+        row.week=w; row.day=d; row.seq=1e9+n;
+        row.batchId=member.batchId; row.batchN=n; row.seriesRule=null;   // set below with the new rule
+        State.data.assignments.push(row);
+      });
+    }
+  }
+  const newRule={...rule, toWeek:newToWeek};
+  seriesMembers(member.batchId).forEach(m=>{ m.seriesRule=deepClone(newRule); m.modifiedAt=nowISO(); });
+  resequence(courseId);
+  const c=courseById(courseId);
+  markDirty("Series length changed",(c?c.name+" · ":"")+"through week "+newToWeek+(delta?" ("+(delta>0?"+":"")+delta+" assignments)":""));
+  return delta;
 }
 function deleteSeries(batchId){
   const members=seriesMembers(batchId);
@@ -922,6 +1056,7 @@ function renderCourses(){
       const subBits=[
         c.subject ? c.subject+(c.focus?" → "+c.focus:"") : null,
         {individual:"Individual",group:"Group",family:"Family"}[c.type] + (kids?": "+kids:""),
+        c.weeks ? c.weeks+" wks × "+dpw(c)+" days" : null,
         c.cycle ? "Cycle "+c.cycle : null,
         n+" assignment"+(n===1?"":"s")
       ].filter(Boolean).join(" · ");
@@ -973,8 +1108,9 @@ function courseDetail(c){
       el("div",{class:"li-sub"},[
         c.category + (c.subject? " · "+c.subject+(c.focus?" → "+c.focus:"") : ""),
         {individual:"Individual",group:"Group",family:"Family"}[c.type] + (kids?": "+kids:""),
+        c.weeks?c.weeks+" weeks × "+dpw(c)+" days":null,
         c.cycle?"Cycle "+c.cycle:null, yr?yr.label:null,
-        c.cadence?c.cadence+"×/week":null, c.lessonMinutes?"~"+c.lessonMinutes+" min":null
+        c.lessonMinutes?"~"+c.lessonMinutes+" min":null
       ].filter(Boolean).join(" · "))),
     el("div",{class:"row"},
       el("button",{class:"btn quiet small",onclick:()=>{State.ui.courseFormOpen=!State.ui.courseFormOpen;State.ui.editingCourseId=c.id;render();}},State.ui.courseFormOpen?"Close editor":"Edit course"),
@@ -986,10 +1122,12 @@ function courseDetail(c){
   if(State.ui.courseFormOpen && State.ui.editingCourseId===c.id) wrap.append(courseForm(c));
 
   const list=courseAssignments(c.id);
-  const card=el("div",{class:"card"},el("h3",{},"Assignments — in teaching order"),
-    el("p",{class:"screen-note",style:"margin-bottom:10px"},"The order here is the order the work happens, one row per sitting. Use ↑ ↓ to slide things around; the numbers follow. Scheduling onto real dates is Stage 3."));
-  if(!list.length) card.append(el("div",{class:"empty"},"Nothing here yet — add one, or add a whole batch at once."));
+  const card=el("div",{class:"card"},el("h3",{},"Assignments — the course's own weeks and days"),
+    el("p",{class:"screen-note",style:"margin-bottom:10px"},"“Week 3, Day 2” is a position in this course, not a calendar date — scheduling (Stage 3) maps these onto real days and skips your breaks. Use ↑ ↓ to slide work between days, or edit a row to place it directly."));
+  if(!list.length) card.append(el("div",{class:"empty"},"Nothing here yet — add a single assignment or a recurring one below."));
+  let lastWeek=null;
   list.forEach((a,i)=>{
+    if(a.week!==lastWeek){ card.append(el("div",{class:"week-head"},"Week "+a.week)); lastWeek=a.week; }
     const eff=effectiveLabels(a,c);
     const overridden = a.subjectOverride || a.focusOverride;
     const subBits=[];
@@ -999,7 +1137,7 @@ function courseDetail(c){
     subBits.forEach((t,k)=>{ if(k) sub.append(" · "); sub.append(t); });
     if(a.link){ if(subBits.length) sub.append(" · "); sub.append(el("a",{href:a.link,target:"_blank",rel:"noopener"},"Open link ↗")); }
     card.append(el("div",{class:"list-item"},
-      el("span",{class:"seq"},a.seq+"."),
+      el("span",{class:"seq"},"Day "+a.day),
       el("div",{class:"li-main"},
         el("div",{class:"row"},el("div",{class:"li-name"},a.title),
           a.type!=="Lesson"?el("span",{class:"pill gray"},a.type):null,
@@ -1017,7 +1155,7 @@ function courseDetail(c){
     const editing=State.data.assignments.find(a=>a.id===State.ui.editingAssignId);
     wrap.append(assignmentForm(c, editing||null));
   } else {
-    wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add assignments"));
+    wrap.append(el("button",{class:"btn",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add an assignment"));
   }
   return wrap;
 }
@@ -1113,6 +1251,7 @@ function courseForm(existing){
   const cycleSel=el("select",{onchange:e=>c.cycle=e.target.value?Number(e.target.value):null},
     el("option",{value:"",selected:!c.cycle},"No cycle — Kindergarten & your own courses"),
     CYCLES.map(k=>el("option",{value:k,selected:c.cycle===k},"Cycle "+k)));
+  const weeksIn=el("input",{type:"number",min:"1",max:"60",value:c.weeks??"",placeholder:"e.g. 32",onchange:e=>c.weeks=e.target.value?Number(e.target.value):null});
   const cadIn=el("input",{type:"number",min:"1",max:"7",value:c.cadence??"",placeholder:"e.g. 4",onchange:e=>c.cadence=e.target.value?Number(e.target.value):null});
   const minIn=el("input",{type:"number",min:"1",value:c.lessonMinutes??"",placeholder:"e.g. 15",onchange:e=>c.lessonMinutes=e.target.value?Number(e.target.value):null});
   const parentChk=el("input",{type:"checkbox",checked:c.parentLed,onchange:e=>c.parentLed=e.target.checked});
@@ -1127,14 +1266,15 @@ function courseForm(existing){
       el("label",{class:"field"},"Subject",subjSel),
       el("label",{class:"field"},"Focus ",el("span",{class:"hint"},"optional"),focusSel),
       el("label",{class:"field"},"Course type",typeSel),
-      el("label",{class:"field"},"School year",yearSel)),
+      el("label",{class:"field"},"School year",yearSel),
+      el("label",{class:"field"},"Length in weeks ",el("span",{class:"hint"},"the course's own weeks — real dates come with scheduling"),weeksIn),
+      el("label",{class:"field"},"Days per week ",el("span",{class:"hint"},"how many school days it meets"),cadIn)),
     studentsWrap,
     el("details",{class:"adv",open:!!existing},el("summary",{},"More details — cycle, cadence, links, notes"),
       el("div",{class:"stack",style:"margin-top:10px"},
         el("div",{class:"grid2"},
           el("label",{class:"field"},"Curriculum cycle",cycleSel),
           existing?el("label",{class:"field"},"Status",statusSel):null,
-          el("label",{class:"field"},"Times per week ",el("span",{class:"hint"},"used by scheduling later"),cadIn),
           el("label",{class:"field"},"Typical lesson minutes",minIn)),
         el("label",{class:"row",style:"font-size:14px;font-weight:600;gap:8px;cursor:pointer"},parentChk,"Parent-led (shows in the Mom view later)"),
         el("label",{class:"field"},"Resource links",linksIn),
@@ -1154,70 +1294,134 @@ function courseForm(existing){
 
 function assignmentForm(course, existing){
   const a = existing ? deepClone(existing) : newAssignment(course.id);
-  const series = existing && existing.batchId ? seriesMembers(existing.batchId) : [];
-  const rep={ count:1, start:1, more:5, copyStart:2 };
-  const card=el("div",{class:"card"}, el("h3",{}, existing?"Edit assignment #"+existing.seq:"Add assignments"),
-    existing?null:el("p",{class:"screen-note"},"One assignment or a whole series from this single form — set “How many” below. New work lands at the end of the sequence; slide it into place with the arrows. Labels inherit from the course."));
-  const titleIn=el("input",{type:"text",value:a.title,placeholder:"e.g. Little House in the Big Woods, Ch. 1 — or Chapter {n}",oninput:e=>a.title=e.target.value});
+  const inSeries = existing && existing.batchId;
+  const members = inSeries ? seriesMembers(existing.batchId) : [];
+  const rule = inSeries ? existing.seriesRule : null;
+  const width=dpw(course), courseWeeks=course.weeks||weeksOf(course);
+  const last=courseAssignments(course.id).slice(-1)[0];
+  const mode={ kind:"single", scope:"one" };
+  const rec={ slots:Array.from({length:width},(_,k)=>k+1), fromWeek:1, toWeek:courseWeeks, everyN:1, numbered:false };
+  const pos={ week: existing?existing.week:(last?last.week:1), day: existing?existing.day:(last?last.day:1) };
+
+  const card=el("div",{class:"card"}, el("h3",{}, existing?("Edit assignment — Week "+existing.week+", Day "+existing.day):"Add an assignment"));
+
+  /* shared fields */
+  const titleIn=el("input",{type:"text",value:a.title,placeholder:"e.g. Piano Practice — or Little House, Ch. 1",oninput:e=>a.title=e.target.value});
   const typeSel=el("select",{onchange:e=>a.type=e.target.value},
     tax().assignmentTypes.map(t=>el("option",{value:t,selected:a.type===t},t)));
   const descIn=el("textarea",{placeholder:"Description (optional)",oninput:e=>a.description=e.target.value},a.description);
   const promptIn=el("input",{type:"text",value:a.narrationPrompt,placeholder:"e.g. Tell me about Sally's big brass kettle",
-    oninput:e=>{a.narrationPrompt=e.target.value; if(e.target.value) {a.narrationExpected=true; narrChk.checked=true;}}});
+    oninput:e=>{a.narrationPrompt=e.target.value; if(e.target.value){a.narrationExpected=true; narrChk.checked=true;}}});
   const narrChk=el("input",{type:"checkbox",checked:a.narrationExpected,onchange:e=>a.narrationExpected=e.target.checked});
-  const linkIn=el("input",{type:"text",value:a.link,placeholder:"https://…",oninput:e=>a.link=e.target.value});
+  const linkIn=el("input",{type:"text",value:a.link,placeholder:"www.example.com or https://…",oninput:e=>a.link=e.target.value});
   const minIn=el("input",{type:"number",min:"1",value:a.minutes??"",placeholder:"e.g. 20",onchange:e=>a.minutes=e.target.value?Number(e.target.value):null});
   const {subjSel,focusSel}=subjectFocusPickers(a,"subjectOverride","focusOverride",course);
   const tagsIn=el("input",{type:"text",value:a.tags.join(", "),placeholder:"comma, separated, tags",
-    oninput:e=>a.tags=e.target.value.split(",").map(s=>s.trim()).filter(Boolean)});
+    oninput:e=>a.tags=e.target.value.split(",").map(x=>x.trim()).filter(Boolean)});
   const notesIn=el("textarea",{placeholder:"Notes (optional)",oninput:e=>a.notes=e.target.value},a.notes);
 
-  /* “How many” — the repeating rule lives inside the one form (new assignments only) */
-  const startWrap=el("label",{class:"field",style:"display:none"},"Start numbering at",
-    el("input",{type:"number",value:rep.start,onchange:e=>rep.start=Number(e.target.value)}));
-  const countHint=el("p",{class:"li-sub",style:"display:none"},"Write {n} in the title where the number should go — “Chapter {n}” starting at 4 becomes Chapter 4, Chapter 5… Without {n}, every copy keeps the same title (one memory passage for six weeks).");
-  const countIn=el("input",{type:"number",min:"1",max:"500",value:rep.count,onchange:e=>{
-    rep.count=Number(e.target.value)||1;
-    const many=rep.count>1;
-    startWrap.style.display=many?"":"none"; countHint.style.display=many?"":"none";
-  }});
+  const weekIn=el("input",{type:"number",min:"1",value:pos.week,onchange:e=>pos.week=Number(e.target.value)||1});
+  const daySel=el("select",{onchange:e=>pos.day=Number(e.target.value)},
+    Array.from({length:width},(_,k)=>el("option",{value:k+1,selected:pos.day===k+1},"Day "+(k+1))));
 
-  /* Series tools (editing only) */
-  let seriesBox=null;
+  /* recurring controls (create mode + make-recurring) */
+  function recControls(){
+    const slotsRow=el("div",{class:"weekday-row"});
+    Array.from({length:width},(_,k)=>k+1).forEach(d=>{
+      const on=rec.slots.includes(d);
+      const lab=el("label",{class:on?"on":""},
+        el("input",{type:"checkbox",checked:on,onchange:e=>{
+          if(e.target.checked){ if(!rec.slots.includes(d)) rec.slots.push(d); lab.classList.add("on"); }
+          else { rec.slots=rec.slots.filter(x=>x!==d); lab.classList.remove("on"); }
+        }}),"Day "+d);
+      slotsRow.append(lab);
+    });
+    const fromIn=el("input",{type:"number",min:"1",value:rec.fromWeek,onchange:e=>rec.fromWeek=Number(e.target.value)||1});
+    const toIn=el("input",{type:"number",min:"1",value:rec.toWeek,onchange:e=>rec.toWeek=Number(e.target.value)||1});
+    const everySel=el("select",{onchange:e=>rec.everyN=Number(e.target.value)},
+      [1,2,3,4].map(n=>el("option",{value:n,selected:rec.everyN===n},n===1?"Every week":"Every "+n+" weeks")));
+    const numChk=el("input",{type:"checkbox",checked:rec.numbered,onchange:e=>rec.numbered=e.target.checked});
+    return el("div",{class:"stack"},
+      el("label",{class:"field"},"Repeat on",slotsRow),
+      el("div",{class:"grid2"},
+        el("label",{class:"field"},"From week",fromIn),
+        el("label",{class:"field"},"Through week",toIn),
+        el("label",{class:"field"},"Repeat every",everySel),
+        el("label",{class:"row",style:"font-size:14px;font-weight:600;gap:8px;cursor:pointer;align-self:end"},numChk,"Number the titles (1, 2, 3…)")),
+      el("p",{class:"li-sub"},"Numbering is only for content that advances — Chapter 1, Chapter 2… For work like piano practice, leave it off and every occurrence keeps the same title. (Typing {n} in the title still works for patterns like “Lesson {n}”.)"));
+  }
+
+  /* create mode: single vs recurring toggle */
+  let kindRow=null, singlePos=null, recBox=null;
+  if(!existing){
+    const mk=(val,label)=>{
+      const r=el("input",{type:"radio",name:"kind",checked:mode.kind===val,onchange:()=>{mode.kind=val;
+        singlePos.style.display=val==="single"?"":"none"; recBox.style.display=val==="recurring"?"":"none";}});
+      return el("label",{class:"row",style:"font-size:14.5px;font-weight:600;gap:8px;cursor:pointer"},r,label);
+    };
+    kindRow=el("div",{class:"row",style:"gap:22px"},mk("single","Single assignment"),mk("recurring","Recurring assignment"));
+    singlePos=el("div",{class:"grid2"},
+      el("label",{class:"field"},"Week",weekIn),
+      el("label",{class:"field"},"Day",daySel));
+    recBox=recControls(); recBox.style.display="none";
+  }
+
+  /* edit mode: series tools */
+  let scopeRow=null, seriesBox=null;
   if(existing){
-    seriesBox=el("div",{class:"stack",style:"margin-top:10px"});
-    if(series.length>1){
-      const patIn=el("input",{type:"text",placeholder:"New title for all — use {n} for the number, e.g. Lesson {n}"});
-      seriesBox.append(
-        el("p",{class:"li-sub"},"This is one of "+series.length+" in a series (made together). These act on all "+series.length+":"),
-        el("div",{class:"row"},
-          el("div",{style:"flex:2;min-width:180px"},patIn),
-          el("button",{class:"btn secondary small",onclick:()=>{ if(renameSeries(existing.batchId,patIn.value)){ State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render(); toast(series.length+" assignments renamed"); } }},"Rename all"),
-          el("button",{class:"btn danger small",onclick:()=>deleteSeries(existing.batchId)},"Delete all "+series.length)));
+    if(inSeries){
+      const mkScope=(val,label)=>{
+        const r=el("input",{type:"radio",name:"scope",checked:mode.scope===val,onchange:()=>mode.scope=val});
+        return el("label",{class:"row",style:"font-size:14px;font-weight:600;gap:8px;cursor:pointer"},r,label);
+      };
+      scopeRow=el("div",{class:"notice",style:"margin-bottom:0"},
+        el("div",{class:"row",style:"gap:20px"},
+          el("span",{style:"font-weight:600"},"This is one of "+members.length+" in a recurring series. Save changes to:"),
+          mkScope("one","Only this one"),
+          mkScope("all","All "+members.length)),
+        el("p",{class:"li-sub",style:"margin-top:6px"},"“All” works like a header: whatever you change here — link, description, prompt, type, even the title — flows to every assignment in the series. Week/Day placement always moves only this one."));
     }
-    const moreIn=el("input",{type:"number",min:"1",max:"500",value:rep.more,onchange:e=>rep.more=Number(e.target.value)||1});
-    const cStartIn=el("input",{type:"number",value:rep.copyStart,onchange:e=>rep.copyStart=Number(e.target.value)});
-    seriesBox.append(el("details",{class:"adv"},
-      el("summary",{},"Turn into a series / make more copies"),
-      el("div",{class:"stack",style:"margin-top:10px"},
-        el("p",{class:"li-sub"},"Copies of this assignment (all its fields) land right after it in the sequence. If the title contains {n}, copies are numbered from the start value; otherwise they keep the same title. Save any edits first — copies are made from the saved version."),
-        el("div",{class:"grid2"},
-          el("label",{class:"field"},"How many copies",moreIn),
-          el("label",{class:"field"},"Number copies starting at",cStartIn)),
-        el("div",{class:"row"},el("button",{class:"btn secondary small",onclick:()=>{
-          const n=extendToSeries(existing, rep.more, rep.copyStart);
-          State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render();
-          toast(n+" copies added after #"+existing.seq);
-        }},"Create the copies")))));
+    seriesBox=el("div",{class:"stack",style:"margin-top:10px"});
+    if(inSeries && rule){
+      const endIn=el("input",{type:"number",min:rule.fromWeek,value:rule.toWeek});
+      seriesBox.append(el("details",{class:"adv"},
+        el("summary",{},"Series length — extend or shorten"),
+        el("div",{class:"stack",style:"margin-top:10px"},
+          el("p",{class:"li-sub"},"Repeats on "+[...rule.slots].sort().map(d=>"Day "+d).join(", ")+", every "+(rule.everyN===1?"week":rule.everyN+" weeks")+", weeks "+rule.fromWeek+"–"+rule.toWeek+". Change where it ends — new occurrences copy the series' current fields; shortening removes the trimmed weeks' assignments."),
+          el("div",{class:"row"},
+            el("label",{class:"field",style:"flex:1;min-width:120px"},"Through week",endIn),
+            el("button",{class:"btn secondary small",style:"align-self:end",onclick:()=>{
+              const d=changeSeriesEnd(existing, Number(endIn.value));
+              State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render();
+              toast(d===0?"Series length unchanged":(d>0?d+" assignments added":(-d)+" assignments removed"));
+            }},"Apply")))));
+    }
+    if(inSeries){
+      seriesBox.append(el("div",{class:"row"},
+        el("button",{class:"btn danger small",onclick:()=>deleteSeries(existing.batchId)},"Delete the whole series ("+members.length+")")));
+    } else {
+      const rc=recControls();
+      seriesBox.append(el("details",{class:"adv"},
+        el("summary",{},"Make this recurring…"),
+        el("div",{class:"stack",style:"margin-top:10px"},
+          el("p",{class:"li-sub"},"Turns this assignment into a repeating one. It keeps its Week "+existing.week+", Day "+existing.day+" slot; the rule fills in the rest. Save any field edits first."),
+          rc,
+          el("div",{class:"row"},el("button",{class:"btn secondary small",onclick:()=>{
+            const made=convertToRecurring(existing, rec);
+            if(made>0){ State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render(); toast(made+" occurrences added"); }
+          }},"Create the repeats")))));
+    }
   }
 
   card.append(el("div",{class:"stack"},
+    kindRow,
     el("div",{class:"grid2"},
       el("label",{class:"field"},"Title",titleIn),
-      el("label",{class:"field"},"Type",typeSel),
-      existing?null:el("label",{class:"field"},"How many ",el("span",{class:"hint"},"more than 1 makes a series"),countIn),
-      existing?null:startWrap),
-    existing?null:countHint,
+      el("label",{class:"field"},"Type",typeSel)),
+    existing?el("div",{class:"grid2"},
+      el("label",{class:"field"},"Week ",el("span",{class:"hint"},"moves only this one"),weekIn),
+      el("label",{class:"field"},"Day",daySel)):null,
+    singlePos, recBox,
     el("label",{class:"field"},"Description",descIn),
     el("div",{class:"grid2"},
       el("label",{class:"field"},"Narration prompt ",el("span",{class:"hint"},"the question you'll ask"),promptIn),
@@ -1233,18 +1437,28 @@ function assignmentForm(course, existing){
           el("label",{class:"field"},"Time estimate (minutes)",minIn),
           el("label",{class:"field"},"Tags",tagsIn)),
         el("label",{class:"field"},"Notes",notesIn))),
-    seriesBox,
+    scopeRow, seriesBox,
     el("div",{class:"row"},
       el("button",{class:"btn",onclick:()=>{
-        if(existing){ Object.assign(existing,{title:a.title,description:a.description,type:a.type,
-            subjectOverride:a.subjectOverride,focusOverride:a.focusOverride,link:a.link,minutes:a.minutes,
-            tags:[...a.tags],notes:a.notes,narrationExpected:a.narrationExpected,narrationPrompt:a.narrationPrompt});
-          if(!saveAssignment(existing,false)) return; }
-        else {
-          a.title=a.title.trim();
-          if(!a.title){ toast("Please give it a title", true); return; }
-          const n=createSeries(course.id, a, rep.count, rep.start);
-          if(n>1) toast(n+" assignments added");
+        a.title=a.title.trim();
+        if(!a.title){ toast("Please give it a title", true); return; }
+        if(existing){
+          if(inSeries && mode.scope==="all"){
+            applySeriesEdits(existing, a);
+            placeAt(existing, pos.week, pos.day);
+          } else {
+            Object.assign(existing,{title:a.title,description:a.description,type:a.type,
+              subjectOverride:a.subjectOverride,focusOverride:a.focusOverride,link:normalizeLink(a.link),minutes:a.minutes,
+              tags:[...a.tags],notes:a.notes,narrationExpected:a.narrationExpected,narrationPrompt:a.narrationPrompt});
+            placeAt(existing, pos.week, pos.day);
+            if(!saveAssignment(existing,false)) return;
+          }
+        } else if(mode.kind==="single"){
+          createSingle(course.id, a, pos.week, pos.day);
+        } else {
+          const n=createRecurring(course.id, a, rec);
+          if(!n) return;
+          toast(n+" assignments created");
         }
         State.ui.assignFormOpen=false; State.ui.editingAssignId=null; render();
       }}, existing?"Save changes":"Add"),
