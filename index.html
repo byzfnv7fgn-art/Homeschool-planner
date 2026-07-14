@@ -138,7 +138,7 @@ details.adv{margin-top:8px}
 .chip.mom{background:#EFE6EF;border-color:#E0D2E0;color:#7B5AA6}
 .chip.size{background:#F1EFEA;border-color:#E4E0D6;color:var(--muted)}
 .chip .color-dot{width:9px;height:9px}
-.overlay{position:fixed;inset:0;background:rgba(43,38,31,.45);z-index:60;overflow:auto;padding:20px 12px;-webkit-overflow-scrolling:touch}
+.overlay{position:fixed;inset:0;background:rgba(43,38,31,.45);z-index:60;overflow:auto;padding:20px 12px}
 .overlay .modal{max-width:760px;margin:0 auto 40px}
 .overlay .modal>.card{box-shadow:0 18px 50px rgba(43,38,31,.35);border-color:var(--line)}
 .app-footer{text-align:center;color:var(--muted);font-size:12px;font-family:var(--font-mono);padding:26px 0 4px;letter-spacing:.04em}
@@ -159,7 +159,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.2.5", stage: "Stage 2 — Courses & Assignments", schemaVersion: 5, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.2.6", stage: "Stage 2 — Courses & Assignments", schemaVersion: 5, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -248,6 +248,11 @@ function el(tag, attrs, ...kids){
   return n;
 }
 function clear(n){ while(n.firstChild) n.removeChild(n.firstChild); return n; }
+function dateInput(attrs){            // date field that reliably opens its picker on iPad —
+  const i=el("input",Object.assign({type:"date"},attrs||{}));   // inside a floating pop-up, iOS Safari sometimes
+  i.addEventListener("click",()=>{ try{ if(i.showPicker) i.showPicker(); }catch(e){/* needs a user gesture; the tap is one */} });
+  return i;                           // swallows the tap that should open the date wheel; showPicker() asks explicitly
+}
 
 /* --- 2.4 Misc --- */
 function deepClone(o){ return JSON.parse(JSON.stringify(o)); }
@@ -817,6 +822,16 @@ function effectiveLabels(a, c){                  // what the completion record w
   if(a.subjectOverride) return { subject:a.subjectOverride, focus:a.focusOverride||"" };
   return { subject:c.subject, focus:a.focusOverride||c.focus };
 }
+function moveAssignmentToCourse(a, newCourseId){ // filed under the wrong course? Move it — a series always travels whole
+  const from=courseById(a.courseId), to=courseById(newCourseId);
+  if(!to || !from || newCourseId===a.courseId) return 0;
+  const rows = a.batchId ? seriesMembers(a.batchId) : [a];
+  rows.forEach(r=>{ r.courseId=newCourseId; r.modifiedAt=nowISO(); });   // Week/Day spots travel with the rows
+  resequence(from.id); resequence(to.id);
+  markDirty(rows.length>1?"Series moved":"Assignment moved",
+    (rows.length>1?rows.length+" assignments":"“"+a.title+"”")+" — "+from.name+" → "+to.name);
+  return rows.length;
+}
 /* Repeating rules (v5 P0) as recurring series on the course's week/day grid.
    A rule — repeat on these days, from week X through week Y, every N weeks —
    generates one row per occurrence; members share a batchId and each carries
@@ -1008,6 +1023,7 @@ function render(){
   app.append(el("footer",{class:"app-footer"},APP.name+" · v"+APP.version+" · "+APP.stage));
   const modal=currentModal();                     // every add/edit form floats above its page — locked build preference
   if(modal) app.append(el("div",{class:"overlay"}, el("div",{class:"modal"}, modal)));
+  document.body.style.overflow = modal ? "hidden" : "";   // freeze the page behind an open pop-up (also steadies iPad date pickers)
 }
 function currentModal(){                          // explicit Save/Cancel only; tapping the backdrop never discards edits
   const ui=State.ui;
@@ -1367,7 +1383,7 @@ function courseForm(existing){
     el("div",{class:"row"},
       el("button",{class:"btn",onclick:()=>{
         if(existing){ Object.assign(existing,{name:c.name,category:c.category,subject:c.subject,focus:c.focus,
-            type:c.type,studentIds:[...c.studentIds],yearId:c.yearId,cycle:c.cycle,cadence:c.cadence,
+            type:c.type,studentIds:[...c.studentIds],yearId:c.yearId,cycle:c.cycle,weeks:c.weeks,cadence:c.cadence,
             lessonMinutes:c.lessonMinutes,parentLed:c.parentLed,links:[...c.links],notes:c.notes,status:c.status});
           if(!saveCourse(existing,false)) return; }
         else if(!saveCourse(c,true)) return;
@@ -1409,6 +1425,8 @@ function assignmentForm(course, existing){
   const weekIn=el("input",{type:"number",min:"1",value:pos.week,onchange:e=>pos.week=Number(e.target.value)||1});
   const daySel=el("select",{onchange:e=>pos.day=Number(e.target.value)},
     Array.from({length:width},(_,k)=>el("option",{value:k+1,selected:pos.day===k+1},"Day "+(k+1))));
+  const courseMoveSel = existing ? el("select",{},
+    coursesAll().map(cc=>el("option",{value:cc.id,selected:cc.id===course.id},cc.category+" · "+cc.name))) : null;
 
   /* recurring controls (create mode + make-recurring) */
   function recControls(){
@@ -1506,6 +1524,11 @@ function assignmentForm(course, existing){
     existing?el("div",{class:"grid2"},
       el("label",{class:"field"},el("div",{},"Week ",el("span",{class:"hint"},"moves only this one")),weekIn),
       el("label",{class:"field"},"Day",daySel)):null,
+    existing?el("label",{class:"field"},
+      el("div",{},"Course ",el("span",{class:"hint"},inSeries
+        ?"filed in the wrong place? Changing it moves the whole series ("+members.length+")"
+        :"filed in the wrong place? Changing it moves this assignment, Week/Day spot and all")),
+      courseMoveSel):null,
     singlePos, recBox,
     el("label",{class:"field"},"Description",descIn),
     el("div",{class:"grid2"},
@@ -1537,6 +1560,10 @@ function assignmentForm(course, existing){
               tags:[...a.tags],notes:a.notes,narrationExpected:a.narrationExpected,narrationPrompt:a.narrationPrompt});
             placeAt(existing, pos.week, pos.day);
             if(!saveAssignment(existing,false)) return;
+          }
+          if(courseMoveSel && courseMoveSel.value && courseMoveSel.value!==existing.courseId){
+            const moved=moveAssignmentToCourse(existing, courseMoveSel.value);
+            if(moved) toast(moved>1 ? "Series moved — "+moved+" assignments now live in their new course" : "Moved to its new course");
           }
         } else if(mode.kind==="single"){
           createSingle(course.id, a, pos.week, pos.day);
@@ -1660,8 +1687,8 @@ function yearForm(existing){
   const card=el("div",{class:"card"},el("h3",{},existing?"Edit "+existing.label:"New school year"),
     el("p",{class:"screen-note"},"Everything about the year lives here — dates, weekday pattern, grade levels, breaks and terms. Nothing is saved until you press "+(existing?"Save changes":"Create year")+"."));
   const labelIn=el("input",{type:"text",value:y.label,placeholder:"e.g. 2026–2027",oninput:e=>y.label=e.target.value});
-  const startIn=el("input",{type:"date",value:y.startDate,onchange:e=>{y.startDate=e.target.value; if(!labelIn.value){labelIn.value=yearLabelFromDate(y.startDate);y.label=labelIn.value;}}});
-  const endIn=el("input",{type:"date",value:y.endDate,onchange:e=>y.endDate=e.target.value});
+  const startIn=dateInput({value:y.startDate,onchange:e=>{y.startDate=e.target.value; if(!labelIn.value){labelIn.value=yearLabelFromDate(y.startDate);y.label=labelIn.value;}}});
+  const endIn=dateInput({value:y.endDate,onchange:e=>y.endDate=e.target.value});
   const cycleSel=el("select",{onchange:e=>y.cycle=Number(e.target.value)},CYCLES.map(c=>el("option",{value:c,selected:y.cycle===c},"Cycle "+c)));
   const varSel=el("select",{onchange:e=>y.ttVariant=e.target.value},TT_VARIANTS.map(v=>el("option",{value:v,selected:y.ttVariant===v},"Variant "+v+(v==="A"?" (first pass)":" (second pass)"))));
   const targetIn=el("input",{type:"number",min:"1",value:y.targetDays,onchange:e=>y.targetDays=Number(e.target.value)||DEFAULTS.targetDays});
@@ -1688,7 +1715,7 @@ function yearForm(existing){
         el("div",{class:"li-main"},el("div",{class:"li-name"},b.name),el("div",{class:"li-sub"},fmtDate(b.start)+" – "+fmtDate(b.end))),
         el("button",{class:"btn danger small",onclick:()=>{removeDateBlock(y,kind,b.id,true);paint();}},"Remove"))));
       if(!y[kind].length) box.append(el("div",{class:"li-sub",style:"padding:4px 0 8px"},"None yet."));
-      const nameIn=el("input",{type:"text",placeholder}), sIn=el("input",{type:"date"}), eIn=el("input",{type:"date"});
+      const nameIn=el("input",{type:"text",placeholder}), sIn=dateInput(), eIn=dateInput();
       box.append(el("div",{class:"row",style:"margin-top:6px"},
         el("div",{style:"flex:2;min-width:140px"},nameIn),
         el("div",{style:"flex:1;min-width:130px"},sIn),
