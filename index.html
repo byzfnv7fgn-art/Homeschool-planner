@@ -168,6 +168,29 @@ details.adv{margin-top:8px}
 .overlay .modal{max-width:760px;margin:0 auto 40px}
 .overlay .modal>.card{box-shadow:0 18px 50px rgba(43,38,31,.35);border-color:var(--line)}
 details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight:600}
+/* --- Today screen (v0.6.0) — built from the shared kit --- */
+.tday-line{display:flex;align-items:center;gap:10px;margin:-6px 0 14px;color:var(--muted);font-size:13.5px}
+.tday-date{font-weight:600;color:var(--ink)}
+.tsection{margin-bottom:22px}
+.tsection-head{display:flex;align-items:center;gap:10px;margin:0 0 8px 2px}
+.tsection-title{font-family:var(--font-display);font-size:18px;margin:0;color:var(--ink)}
+.tstack{margin-bottom:12px}
+.thead{background:#F0EFE6}
+.trow{padding:12px 14px}
+.tcheck{appearance:none;flex:none;width:44px;height:44px;border-radius:50%;border:2px solid var(--pill-border);
+  background:var(--card);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
+.tcheck svg{width:22px;height:22px}
+.tcheck.done{background:var(--spruce);border-color:var(--spruce)}
+.tcheck.half{border-color:var(--gold);color:var(--gold);background:var(--card)}
+.tcheck.skipped{border-style:dashed;background:none}
+.thead .tcheck{width:38px;height:38px}
+.tdone .aname{color:var(--muted);text-decoration:line-through;text-decoration-thickness:1px}
+.tdone{opacity:.62}
+.tskip{opacity:.55}
+.tprompt{font-style:italic;margin-top:2px}
+.tlink{font-size:12px;font-weight:600;color:var(--spruce);text-decoration:none;white-space:nowrap}
+.tmissed{border-left:4px solid var(--gold)}
+.icon-btn.on{color:var(--gold);border-color:var(--gold)}
 </style>
 </head>
 <body>
@@ -184,7 +207,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.5.2", stage: "Stage 3 — Scheduling", schemaVersion: 8, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.6.0", stage: "Stage 3 — Daily view", schemaVersion: 9, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -230,6 +253,7 @@ const COURSE_TYPES = [                       // v5 §5 Course.type
   ["family","Family — the whole family (Together Time, festivals)"]
 ];
 const COURSE_STATUSES = ["active","paused","completed","archived"];   // v5 §5
+const INSTANCE_STATUSES = ["scheduled","inprogress","done","skipped"];   // v5 §2 Scheduled Instance (v0.6.0)
 
 /* --- 1.4 Defaults --- */
 const DEFAULTS = {
@@ -348,7 +372,9 @@ const State = {
         colorsOpen: false, colorPick: null,    // Categories & Colors screen + its picker modal
         csvOpen: false, importSummary: null,   // the Import/Export pop-up + the after-import report
         enrollOpen: false, enrollId: null,     // the Enroll-from-library pop-up + which master (v0.5.0/0.5.1)
-        courseView: "enrolled" }               // Courses tab: "enrolled" | "library" (v0.5.1)
+        courseView: "enrolled",                // Courses tab: "enrolled" | "library" (v0.5.1)
+        reschedId: null,                       // Today: which instance the reschedule pop-up is moving (v0.6.0)
+        todayOverride: null }                  // test hook only — the smoke suites pin "today" to a fixed date
 };
 
 /* --- 3.2 Blank data file & entity factories --- */
@@ -403,6 +429,22 @@ function newAssignment(courseId){ const t=nowISO(); return { id:uid(), createdAt
   week:1, day:1,                    // position in the course's own grid: "Week 3, Day 2" of the course, never a calendar date
   batchId:null, batchN:null,        // series membership: created-together assignments share a batchId; batchN is this row's number
   seriesRule:null }; }              // recurring definition, kept on every member: {slots,fromWeek,toWeek,everyN,numbered}
+function newInstance(a, date){ const t=nowISO(); return { id:uid(), createdAt:t, modifiedAt:t,
+  courseId:a.courseId, assignmentId:a.id,
+  date,                             // the calendar day this piece of work sits on ("YYYY-MM-DD")
+  status:"scheduled",               // scheduled | inprogress | done | skipped (v5 §2 Scheduled Instance)
+  moved:false,                      // true once the owner reschedules it — a moved instance stops following the projection
+  completedOn:null }; }             // stamped at check-off, cleared on undo
+function newCompletion(inst, a, c, studentId){ const t=nowISO();
+  const lab=effectiveLabels(a,c); const y=State.data.schoolYears.find(x=>x.id===c.yearId);
+  const term=(y&&(y.terms||[]).find(tm=>tm.start&&tm.end&&inst.date>=tm.start&&inst.date<=tm.end))||null;
+  return { id:uid(), createdAt:t,
+    studentId, date:todayISO(),     // the completion date, recorded automatically (v5 §5.1)
+    courseId:c.id, assignmentId:a.id, instanceId:inst.id,
+    yearId:c.yearId||null, term:term?term.name:"",
+    narration:"", attachments:[], grade:"",          // narration capture & grading arrive later; fields exist from day one (v5)
+    snapshot:{ course:c.name, title:a.title,          // v5 name snapshots: history stays readable even if the
+      subject:lab.subject, focus:lab.focus } }; }     // course is later renamed, pruned, or deleted
 
 /* --- 3.3 Change tracking, autosave trigger & activity log --- */
 function logActivity(what, detail){
@@ -487,6 +529,17 @@ function upgradeSchema(data){
           if(!("scheduleMode" in c)) c.scheduleMode="compact";
         });
         data.schemaVersion = 8; break;
+      case 8:    // v9: the daily-view round — scheduled instances become STORED rows with a
+                 // status, and check-offs write permanent completion events. Both collections
+                 // have existed (empty) since Stage 1; this fills fields on any early rows.
+        data.instances = data.instances || [];
+        data.completions = data.completions || [];
+        (data.instances||[]).forEach(i=>{
+          if(!("status" in i)) i.status="scheduled";
+          if(!("moved" in i)) i.moved=false;
+          if(!("completedOn" in i)) i.completedOn=null;
+        });
+        data.schemaVersion = 9; break;
       default: data.schemaVersion = APP.schemaVersion;   // nothing to do
     }
   }
@@ -843,6 +896,7 @@ function deleteCourse(c){
   const n=courseAssignments(c.id).length;
   if(!confirm("Delete “"+c.name+"”"+(n?" and its "+n+" assignment"+(n===1?"":"s"):"")+"? This can't be undone.")) return;
   State.data.assignments = State.data.assignments.filter(a=>a.courseId!==c.id);
+  State.data.instances = (State.data.instances||[]).filter(i=>i.courseId!==c.id);   // v0.6.0 — completions stay (the records firewall)
   State.data.courses = State.data.courses.filter(x=>x.id!==c.id);
   if(State.ui.selectedCourseId===c.id) State.ui.selectedCourseId=null;
   markDirty("Course deleted", c.name+(n?" (with "+n+" assignments)":""));
@@ -886,6 +940,7 @@ function saveAssignment(a, isNew){
 function deleteAssignment(a){
   if(!confirm("Delete assignment #"+a.seq+" “"+a.title+"”? The rest of the sequence closes up around it.")) return;
   State.data.assignments = State.data.assignments.filter(x=>x.id!==a.id);
+  State.data.instances = (State.data.instances||[]).filter(i=>i.assignmentId!==a.id);   // v0.6.0 — its completion records remain
   resequence(a.courseId);
   const c=courseById(a.courseId);
   markDirty("Assignment deleted", (c?c.name+" · ":"")+a.title);
@@ -928,7 +983,9 @@ function moveAssignmentToCourse(a, newCourseId){ // filed under the wrong course
   const from=courseById(a.courseId), to=courseById(newCourseId);
   if(!to || !from || newCourseId===a.courseId) return 0;
   const rows = a.batchId ? seriesMembers(a.batchId) : [a];
+  const moving=new Set(rows.map(r=>r.id));
   rows.forEach(r=>{ r.courseId=newCourseId; r.modifiedAt=nowISO(); });   // Week/Day spots travel with the rows
+  (State.data.instances||[]).forEach(i=>{ if(moving.has(i.assignmentId)) i.courseId=newCourseId; });   // v0.6.0
   resequence(from.id); resequence(to.id);
   markDirty(rows.length>1?"Series moved":"Assignment moved",
     (rows.length>1?rows.length+" assignments":"“"+a.title+"”")+" — "+from.name+" → "+to.name);
@@ -1080,6 +1137,7 @@ function reshapeSeries(member, newRule){         // change when & how a series r
   removed=goners.length;
   const gonerIds=new Set(goners.map(m=>m.id));
   State.data.assignments=State.data.assignments.filter(a=>!gonerIds.has(a.id));
+  State.data.instances=(State.data.instances||[]).filter(i=>!gonerIds.has(i.assignmentId));   // v0.6.0
   seriesMembers(bid).forEach(m=>{ m.seriesRule=deepClone(newRule); });
   resequence(courseId);
   const c=courseById(courseId);
@@ -1091,7 +1149,9 @@ function deleteSeries(batchId){
   if(!members.length) return;
   if(!confirm("Delete all "+members.length+" assignments in this series? This can't be undone.")) return;
   const courseId=members[0].courseId, c=courseById(courseId);
+  const gone=new Set(members.map(m=>m.id));
   State.data.assignments=State.data.assignments.filter(a=>a.batchId!==batchId);
+  State.data.instances=(State.data.instances||[]).filter(i=>!gone.has(i.assignmentId));   // v0.6.0
   resequence(courseId);
   State.ui.assignFormOpen=false; State.ui.editingAssignId=null;
   markDirty("Series deleted", (c?c.name+" · ":"")+members.length+" assignments");
@@ -1288,7 +1348,14 @@ function courseSchedule(c){                      // → {dates:Map(assignmentId�
   const aligned=c.scheduleMode==="aligned";
   const lastWeek=aligned ? Math.max(...asg.map(a=>a.week||1)) : 0;
   const needCompact=new Set(asg.map(a=>(a.week||1)+":"+(a.day||1))).size;   // v0.5.1: one slot per PLAN POSITION
-  const weeks=[]; let ws=mondayOf(c.startDate), placed=0;
+  /* v0.6.0 fix (owner-reported): anchor calendar week 1 at the first REAL school
+     day on/after the start date. A start date on a weekend, an off-pattern day,
+     or inside a break used to leave calendar week 1 empty, and the spill-forward
+     then landed plan weeks 1 AND 2 on the same dates (her Sunday 9/27 start). */
+  let anchor=c.startDate;
+  for(let i=0;i<400;i++){ const d=addDaysISO(c.startDate,i);
+    if(y.weekdayPattern.includes(new Date(d+"T12:00:00").getDay()) && !inYearBreak(y,d)){ anchor=d; break; } }
+  const weeks=[]; let ws=mondayOf(anchor), placed=0;
   for(let g=0; g<520; g++){                      // one school-week per pass; hard stop at 10 years
     const days=[];
     for(let i=0;i<7 && days.length<cad;i++){
@@ -1341,12 +1408,135 @@ function enrollCourse(master, opts){             // deep-clone a library master 
   markDirty("Enrolled from library", c.name+(y?" · "+y.label:""));
   return c;
 }
+
+/* --- 5.8 Daily view: stored instances, check-off & the completion log --- */
+/* v5 §2 + §5.1–5.2. The projection (5.7) stays the source of dates UNTIL a row
+   is touched: instances are stored so a status or a reschedule can stick, and an
+   untouched "scheduled" instance keeps following the projection if the course's
+   start date or plan changes. Check-offs write PERMANENT completion events —
+   one per assigned enrolled student (sit-in students skipped, v5) — carrying
+   text snapshots of the course name, title and effective subject/focus, so the
+   record stays readable even if the course is later renamed or deleted.
+   Scheduling operations never touch completions; only the owner's own
+   un-check removes the events it wrote (v5 §5.1 Undo). */
+function todayISO(){ if(State.ui.todayOverride) return State.ui.todayOverride;
+  const d=new Date();
+  return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function isSchoolDay(y, iso){
+  return y.weekdayPattern.includes(new Date(iso+"T12:00:00").getDay()) && !inYearBreak(y, iso); }
+function nextSchoolDayISO(y, iso){                // first school day strictly after iso
+  let d=iso; for(let i=0;i<400;i++){ d=addDaysISO(d,1); if(isSchoolDay(y,d)) return d; } return null; }
+function addSchoolDaysISO(y, iso, n){             // slide a date forward n school days
+  let d=iso; for(let k=0;k<n;k++){ const nx=nextSchoolDayISO(y,d); if(!nx) return d; d=nx; } return d; }
+function courseYear(c){ return State.data.schoolYears.find(x=>x.id===c.yearId) || activeYear(); }
+function instanceFor(assignmentId){ return State.data.instances.find(i=>i.assignmentId===assignmentId); }
+function syncInstances(c){                        // reconcile stored instances with the projection
+  const proj=courseSchedule(c); let changed=0;
+  if(!proj){                                      // course no longer schedulable → untouched projections dissolve
+    const before=State.data.instances.length;
+    State.data.instances=State.data.instances.filter(i=>!(i.courseId===c.id && i.status==="scheduled" && !i.moved));
+    return before-State.data.instances.length;
+  }
+  courseAssignments(c.id).forEach(a=>{
+    const pd=proj.dates.get(a.id), inst=instanceFor(a.id);
+    if(!inst && pd){ State.data.instances.push(newInstance(a, pd)); changed++; }
+    else if(inst && pd && inst.status==="scheduled" && !inst.moved && inst.date!==pd){ inst.date=pd; inst.modifiedAt=nowISO(); changed++; }
+    else if(inst && !pd && inst.status==="scheduled" && !inst.moved){
+      State.data.instances=State.data.instances.filter(i=>i.id!==inst.id); changed++; }
+  });
+  return changed;
+}
+function syncAllInstances(){                      // called when the Today screen opens
+  let changed=0;
+  State.data.courses.filter(c=>c.role==="working" && c.status==="active" && c.startDate).forEach(c=>{ changed+=syncInstances(c); });
+  if(changed) markDirty();                        // quiet — no log entry for routine reconciling
+  return changed;
+}
+function enrolledStudentsFor(c){                  // who a check-off records for (sit-in students skipped — v5)
+  if(c.type==="family") return students().filter(p=>p.status==="enrolled");
+  return (c.studentIds||[]).map(id=>State.data.people.find(p=>p.id===id)).filter(p=>p && p.status==="enrolled");
+}
+function completeInstance(inst, quiet){           // → how many completion events were written
+  if(inst.status==="done") return 0;
+  const a=State.data.assignments.find(x=>x.id===inst.assignmentId), c=courseById(inst.courseId);
+  if(!a || !c) return 0;
+  const kids=enrolledStudentsFor(c);
+  kids.forEach(p=>State.data.completions.push(newCompletion(inst, a, c, p.id)));
+  inst.status="done"; inst.completedOn=todayISO(); inst.modifiedAt=nowISO();
+  if(!quiet) markDirty("Checked off", "“"+a.title+"”"+(kids.length?" — "+kids.map(p=>p.name).join(", "):""));
+  return kids.length;
+}
+function uncompleteInstance(inst, quiet){         // v5 §5.1 Undo: removes the events this check-off wrote
+  if(inst.status!=="done") return;
+  const a=State.data.assignments.find(x=>x.id===inst.assignmentId);
+  State.data.completions=State.data.completions.filter(ev=>ev.instanceId!==inst.id);
+  inst.status="scheduled"; inst.completedOn=null; inst.modifiedAt=nowISO();
+  if(!quiet) markDirty("Check-off undone", a?"“"+a.title+"”":"");
+}
+function setInstanceStatus(inst, s){              // the in-progress / skipped toggles
+  if(inst.status==="done" || inst.status===s) return;
+  inst.status=s; inst.modifiedAt=nowISO();
+  if(s==="skipped"){ const a=State.data.assignments.find(x=>x.id===inst.assignmentId);
+    markDirty("Skipped", a?"“"+a.title+"”":""); }
+  else markDirty();                               // in-progress toggles stay out of the activity log
+}
+function completeCourseBlock(courseId, date){     // the header check-all (v5 §5.1) — one activity entry
+  const rows=State.data.instances.filter(i=>i.courseId===courseId && i.date===date);
+  const open=rows.filter(i=>i.status!=="done" && i.status!=="skipped");
+  const c=courseById(courseId); let events=0;
+  if(open.length){ open.forEach(i=>{ events+=completeInstance(i, true); });
+    markDirty("Checked off — whole section", (c?c.name:"")+" · "+open.length+" item"+(open.length===1?"":"s")+", "+events+" record"+(events===1?"":"s"));
+  } else {
+    const done=rows.filter(i=>i.status==="done");
+    if(!done.length) return;
+    if(!confirm("Un-check all "+done.length+" completed item"+(done.length===1?"":"s")+" in “"+(c?c.name:"")+"”? Their completion records are removed.")) return;
+    done.forEach(i=>uncompleteInstance(i, true));
+    markDirty("Section check-off undone", (c?c.name:"")+" · "+done.length+" item"+(done.length===1?"":"s"));
+  }
+}
+function rescheduleInstance(inst, date){          // v5 §5.2 single reschedule — the one-row move
+  if(!date || date===inst.date) return;
+  const a=State.data.assignments.find(x=>x.id===inst.assignmentId);
+  const old=inst.date; inst.date=date; inst.moved=true; inst.modifiedAt=nowISO();
+  markDirty("Rescheduled", (a?"“"+a.title+"” ":"")+fmtDate(old)+" → "+fmtDate(date));
+}
+function overdueInstances(){                      // unfinished work sitting on earlier days
+  const t=todayISO();
+  return State.data.instances.filter(i=>i.date<t && (i.status==="scheduled" || i.status==="inprogress"));
+}
+function slideMissedForward(){                    // v5 §5.2 slide forward — the expected default, cascading
+  const t=todayISO(); const od=overdueInstances(); if(!od.length) return 0;
+  const byCourse={}; od.forEach(i=>{ (byCourse[i.courseId]=byCourse[i.courseId]||[]).push(i); });
+  let movedRows=0;
+  Object.keys(byCourse).forEach(cid=>{
+    const c=courseById(cid), y=c&&courseYear(c); if(!y) return;
+    const earliest=byCourse[cid].map(i=>i.date).sort()[0];
+    const target=isSchoolDay(y,t) ? t : nextSchoolDayISO(y,t);
+    let shift=0, d=earliest;
+    while(d<target && shift<400){ d=nextSchoolDayISO(y,d); shift++; }
+    if(!shift) return;                            // every remaining piece slides the same distance —
+    State.data.instances.forEach(i=>{             // today's and future work moves too, so nothing piles up
+      if(i.courseId===cid && (i.status==="scheduled" || i.status==="inprogress")){
+        i.date=addSchoolDaysISO(y, i.date, shift); i.moved=true; i.modifiedAt=nowISO(); movedRows++; }
+    });
+  });
+  if(movedRows) markDirty("Missed work slid forward", movedRows+" item"+(movedRows===1?"":"s")+" moved to the next school days");
+  return movedRows;
+}
+function dayCounter(y){                           // "School day N of 180" (v5 §5.1)
+  if(!y || !y.startDate) return null;
+  const t=todayISO(); if(t<y.startDate) return { n:0, target:y.targetDays||0 };
+  const end=(y.endDate && y.endDate<t) ? y.endDate : t;
+  let n=0, d=y.startDate;
+  for(let i=0;i<800 && d<=end;i++){ if(isSchoolDay(y,d)) n++; d=addDaysISO(d,1); }
+  return { n, target:y.targetDays||0 };
+}
 /* ================================================================
    SECTION 6 — UI
    Renders everything from State. No data lives in the DOM.
    6.1 Shell & save status   6.2 Setup screen   6.3 Home
    6.4 Courses & assignments   6.5 People screen
-   6.6 School year screen      6.7 Data & backups
+   6.6 School year screen      6.7 Data & backups   6.8 Today
    ================================================================ */
 
 const app = document.getElementById("app");
@@ -1367,10 +1557,10 @@ function render(){
       el("div",{},
         el("div",{class:"bp-title"},"Homeschool Planner")))));   // save state & version live on Data & Backups (v0.3.0)
   if(!State.data){ app.append(renderSetup()); lastViewKey=viewKey(); return; }
-  const tabs=[["home","Home"],["courses","Courses"],["people","Students"],["year","School Year"],["data","Data & Backups"]];
+  const tabs=[["home","Home"],["today","Today"],["courses","Courses"],["people","Students"],["year","School Year"],["data","Data & Backups"]];
   app.append(el("nav",{class:"tabs"},
     tabs.map(([id,label])=>el("button",{class:State.ui.screen===id?"active":"", onclick:()=>{State.ui.screen=id;State.ui.colorsOpen=false;render();}},label))));
-  app.append({home:renderHome, courses:renderCourses, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
+  app.append({home:renderHome, today:renderToday, courses:renderCourses, people:renderPeople, year:renderYears, data:renderData}[State.ui.screen]());
   const modal=currentModal();                     // every add/edit form floats above its page — locked build preference
   if(modal) app.append(el("div",{class:"overlay"}, el("div",{class:"modal"}, modal)));
   document.body.style.overflow = modal ? "hidden" : "";   // freeze the page behind an open pop-up (also steadies iPad date pickers)
@@ -1394,6 +1584,10 @@ function currentModal(){                          // explicit Save/Cancel only; 
     if(ui.courseFormOpen) return courseForm(ui.editingCourseId?courseById(ui.editingCourseId):null);
     if(ui.quickAddOpen) return quickAddModal();
     if(ui.colorPick) return colorPickModal();
+  }
+  if(ui.screen==="today" && ui.reschedId){
+    const inst=State.data.instances.find(i=>i.id===ui.reschedId);
+    if(inst) return rescheduleModal(inst);
   }
   if(ui.screen==="people" && ui.personFormOpen)
     return personForm(State.data.people.find(p=>p.id===ui.editingPersonId)||null);
@@ -1457,7 +1651,7 @@ function renderHome(){
   const d=State.data, y=activeYear();
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"Home"),
-    el("p",{class:"screen-note"},"Your family, the school year, and now your courses and their assignments. Putting work on the calendar arrives in Stage 3."));
+    el("p",{class:"screen-note"},"Your family, the school year, your courses — and now the Today tab, where each morning\u2019s work is checked off."));
   if(State.storage.mode==="browser"){
     wrap.append(el("div",{class:"card"},
       el("div",{class:"eyebrow",style:"margin-bottom:6px"},"This device's copy"),
@@ -1491,7 +1685,7 @@ function renderHome(){
   wrap.append(card);
   wrap.append(el("div",{class:"card"},
     el("h3",{},"Coming in the next stages"),
-    el("p",{class:"li-sub"},"Stage 3: scheduling — cadence, breaks, slide forward · Stage 4: the iPad daily view with tap-to-complete · then the LHP import and enrollment wizards.")));
+    el("p",{class:"li-sub"},"Next: narration capture on check-offs, festival weeks, the makeup queue and bulk reschedule · then the planner list and the enrollment wizard.")));
   return wrap;
 }
 /* --- 6.4 Courses & assignments --- */
@@ -1511,12 +1705,14 @@ const ICONS={
   trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>',
   chevup:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>',
   chevdown:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+  half:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></svg>',
+  skip:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6l6 6-6 6"/><path d="M13 6l6 6-6 6"/></svg>',
   chevright:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>',
   archive:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></svg>',
   download:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>'
 };
 function iconBtn(name, onclick, label, opts){ opts=opts||{};   // small gray icon button, 40px tap target (the mockup's quiet actions)
-  const b=el("button",{class:"icon-btn"+(opts.danger?" danger":""),onclick,"aria-label":label,title:label,disabled:!!opts.disabled});
+  const b=el("button",{class:"icon-btn"+(opts.danger?" danger":"")+(opts.active?" on":""),onclick,"aria-label":label,title:label,disabled:!!opts.disabled});
   b.innerHTML=ICONS[name]||""; return b;
 }
 function kidCircle(p, grade, big){                 // THE shared piece: identical on Courses, Students, Year grades, Home
@@ -2489,6 +2685,139 @@ async function renderBackupList(box){
   }catch(e){ box.append(el("div",{class:"empty"},"Backups couldn't be listed: "+e.message)); }
 }
 
+/* --- 6.8 Today — the iPad morning screen (v5 §5.1) --- */
+/* Shows only today's scheduled work. Family block first, then Group lessons
+   (only when any exist), then one section per student — in the owner's own
+   order: students in their Students-page order, courses in the global manual
+   sort. Big tap targets; the whole left circle is the check-off. A section
+   header's circle checks off everything under it at once (one activity entry,
+   so the log can tell the story); tapping it again un-checks the lot after a
+   confirm. Completed rows visually recede; In Progress wears a half-filled
+   circle; Skipped grays out and writes no records. */
+function instStatusIcon(inst){
+  if(inst.status==="done") return icon("check");
+  if(inst.status==="inprogress") return icon("half");
+  return null;
+}
+function todayRow(inst, a, c){
+  const done=inst.status==="done", skipped=inst.status==="skipped", half=inst.status==="inprogress";
+  const lab=effectiveLabels(a,c);
+  const meta=el("div",{class:"meta-line"});
+  if(lab.subject) meta.append(el("span",{class:"subj-pill",style:"background:"+subjTint(lab.subject)},lab.subject));
+  if(lab.focus) meta.append(el("span",{class:"focus-txt"},lab.focus));
+  if(a.resource) meta.append(el("span",{class:"focus-txt"},a.resource));
+  if(a.link) meta.append(el("a",{href:a.link,target:"_blank",rel:"noopener",class:"tlink"},"open ↗"));
+  const main=el("div",{class:"main"},
+    el("div",{class:"aname"},a.title||"(untitled)"),
+    meta,
+    a.narrationPrompt?el("div",{class:"li-sub tprompt"},"“"+a.narrationPrompt+"”"):null,
+    skipped?el("div",{class:"li-sub"},"Skipped — tap the circle to put it back"):null);
+  const check=el("button",{class:"tcheck"+(done?" done":"")+(half?" half":"")+(skipped?" skipped":""),
+    "aria-label":done?"Un-check":"Check off",
+    onclick:()=>{ if(done) uncompleteInstance(inst);
+      else if(skipped) setInstanceStatus(inst,"scheduled");
+      else completeInstance(inst); render(); }});
+  const ic=instStatusIcon(inst); if(ic) check.append(ic);
+  const acts=el("div",{class:"actions"});
+  if(!done && !skipped){
+    acts.append(iconBtn("half",()=>{ setInstanceStatus(inst, half?"scheduled":"inprogress"); render(); },
+      half?"Clear in-progress":"Mark in progress",{active:half}));
+    acts.append(iconBtn("skip",()=>{ setInstanceStatus(inst,"skipped"); render(); },"Skip — writes no record"));
+  }
+  if(!done) acts.append(iconBtn("calendar",()=>{ State.ui.reschedId=inst.id; render(); },"Move to another day"));
+  return el("div",{class:"srow trow"+(done?" tdone":"")+(skipped?" tskip":""),
+    style:"border-left-color:"+catColor(c.category)}, check, main, acts);
+}
+function todayCourseBlock(c, rows){
+  const done=rows.filter(i=>i.status==="done").length, all=rows.length;
+  const allDone=done===all && all>0;
+  const head=el("div",{class:"srow thead",style:"border-left-color:"+catColor(c.category)},
+    el("button",{class:"tcheck"+(allDone?" done":""),
+      "aria-label":allDone?"Un-check the whole section":"Check off the whole section",
+      onclick:()=>{ completeCourseBlock(c.id, rows[0].date); render(); }}, allDone?icon("check"):null),
+    el("div",{class:"main"},
+      el("div",{class:"aname"},c.name),
+      el("div",{class:"li-sub"},done+" of "+all+" done")));
+  const stack=el("div",{class:"row-stack tstack"},head);
+  const asgById=Object.fromEntries(State.data.assignments.map(a=>[a.id,a]));
+  rows.forEach(i=>{ const a=asgById[i.assignmentId]; if(a) stack.append(todayRow(i,a,c)); });
+  return stack;
+}
+function todaySection(title, blocks, deco){
+  if(!blocks.length) return null;
+  const h=el("div",{class:"tsection-head"});
+  if(deco) h.append(deco);
+  h.append(el("h3",{class:"tsection-title"},title));
+  const sec=el("div",{class:"tsection"},h);
+  blocks.forEach(b=>sec.append(b));
+  return sec;
+}
+function renderToday(){
+  syncAllInstances();                              // stored rows catch up with the projection first
+  const wrap=el("div",{}), y=activeYear(), t=todayISO();
+  const dc=y?dayCounter(y):null;
+  wrap.append(el("h2",{class:"screen-title"},"Today"),
+    el("div",{class:"tday-line"},
+      el("span",{class:"tday-date"},fmtDate(t)),
+      dc?el("span",{class:"thin-pill"},"School day "+dc.n+(dc.target?" of "+dc.target:"")):null,
+      (y && !isSchoolDay(y,t))?el("span",{class:"thin-pill"},"Not a school day"):null));
+  if(!y){ wrap.append(el("div",{class:"card"},
+      el("p",{class:"li-sub"},"No active school year yet — set one up on the School Year tab and today's work will appear here.")));
+    return wrap; }
+  const od=overdueInstances();
+  if(od.length){
+    wrap.append(el("div",{class:"card tmissed"},
+      el("div",{class:"spread"},
+        el("div",{},
+          el("h3",{},od.length+" item"+(od.length===1?"":"s")+" from earlier days"),
+          el("p",{class:"li-sub",style:"margin:2px 0 0"},"One tap slides everything unfinished forward onto the next school days — each course's remaining plan moves together, so nothing piles up.")),
+        el("button",{class:"btn secondary small",onclick:()=>{
+          if(confirm("Slide all missed work forward to the next school days?")){ slideMissedForward(); render(); }
+        }},"Slide it forward"))));
+  }
+  const todays=State.data.instances.filter(i=>i.date===t);
+  if(!todays.length){
+    wrap.append(el("div",{class:"card"},
+      el("p",{class:"li-sub"},"Nothing is scheduled for today. Courses appear here once they're enrolled with a start date (Courses → Library → Enroll).")));
+    return wrap;
+  }
+  const byCourse={}; todays.forEach(i=>{ (byCourse[i.courseId]=byCourse[i.courseId]||[]).push(i); });
+  const courseIds=Object.keys(byCourse)
+    .map(id=>courseById(id)).filter(Boolean)
+    .sort((a,b)=>(a.sortPos||0)-(b.sortPos||0));
+  const asgSeq=Object.fromEntries(State.data.assignments.map(a=>[a.id,a.seq||0]));
+  const blockFor=c=>{ const rows=byCourse[c.id].slice().sort((r1,r2)=>(asgSeq[r1.assignmentId]||0)-(asgSeq[r2.assignmentId]||0));
+    return todayCourseBlock(c, rows); };
+  /* a course several children share renders ONCE and is checked off once for all
+     (v5 group semantics) — even if its type still says "individual" after a
+     multi-student enrollment. Only a course with exactly one student sits in
+     that child's own section. */
+  const shared=c=>c.type==="group" || (c.type==="individual" && (c.studentIds||[]).length>1);
+  const famBlocks=courseIds.filter(c=>c.type==="family").map(blockFor);
+  const grpBlocks=courseIds.filter(shared).map(blockFor);
+  wrap.append(todaySection("Family", famBlocks, el("span",{class:"fam-pill"},"Family")));
+  wrap.append(todaySection("Group lessons", grpBlocks, null));
+  students().forEach(p=>{
+    const mine=courseIds.filter(c=>c.type==="individual" && (c.studentIds||[]).length===1 && c.studentIds[0]===p.id).map(blockFor);
+    const grade=y.studentGrades?y.studentGrades[p.id]:null;
+    wrap.append(todaySection(p.name, mine, kidCircle(p, grade)));
+  });
+  return wrap;
+}
+function rescheduleModal(inst){
+  const a=State.data.assignments.find(x=>x.id===inst.assignmentId);
+  const pick=dateInput({value:inst.date});
+  return el("div",{},
+    el("h3",{},"Move to another day"),
+    el("p",{class:"li-sub"},(a?"“"+a.title+"” — ":"")+"now on "+fmtDate(inst.date)+". Only this one moves; everything else stays put."),
+    el("label",{},"New day ",pick),
+    el("div",{class:"row",style:"margin-top:14px;justify-content:flex-end"},
+      el("button",{class:"btn quiet",onclick:()=>{State.ui.reschedId=null;render();}},"Cancel"),
+      el("button",{class:"btn",onclick:()=>{
+        rescheduleInstance(inst, pick.value);
+        State.ui.reschedId=null; render();
+      }},"Save")));
+}
 /* ================================================================
    SECTION 7 — BOOT
    Decide storage mode, restore what we can, first render.
