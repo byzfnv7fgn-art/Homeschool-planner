@@ -184,7 +184,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.5.1", stage: "Stage 3 — Scheduling", schemaVersion: 8, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.5.2", stage: "Stage 3 — Scheduling", schemaVersion: 8, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -1574,8 +1574,8 @@ function renderCourses(){
     el("p",{class:"screen-note"}, lib
       ? "The library: every course you could teach — pristine originals, never scheduled. Enroll copies one to your enrolled list for chosen children and a start date."
       : "What you're actually teaching — enrolled courses that can carry students, a start date, and a schedule."));
-  const segBtn=(key,label)=>el("button",{class:"btn small "+(State.ui.courseView===key?"":"quiet"),
-    onclick:()=>{State.ui.courseView=key;render();}},label);
+  const segBtn=(key,label)=>el("button",{class:"btn small "+(State.ui.courseView===key?"secondary":"quiet"),
+    onclick:()=>{State.ui.courseView=key;render();}},label);   // v0.5.2 — no solid dark buttons on this page (owner)
   const nEnr=State.data.courses.filter(c=>c.role!=="master").length,
         nLib=State.data.courses.filter(c=>c.role==="master").length;
   wrap.append(el("div",{class:"row",style:"margin:2px 0 10px"},
@@ -1601,7 +1601,7 @@ function renderCourses(){
     stack.append(el("div",{class:"srow",style:"border-left-color:"+catColor(c.category)},
       el("div",{class:"main"}, courseNameLine(c), courseMetaLine(c)),
       el("div",{class:"actions"},
-        c.role==="master"?el("button",{class:"btn small",onclick:()=>{State.ui.enrollId=c.id;State.ui.enrollOpen=true;render();}},"Enroll"):null,
+        c.role==="master"?el("button",{class:"btn secondary small",onclick:()=>{State.ui.enrollId=c.id;State.ui.enrollOpen=true;render();}},"Enroll"):null,
         iconBtn("chevup",()=>moveCourse(c,-1),"Move "+c.name+" up",{disabled:i===0}),
         iconBtn("chevdown",()=>moveCourse(c,1),"Move "+c.name+" down",{disabled:i===list.length-1}),
         iconBtn("eye",()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.quickAddOpen=false;State.ui.courseFormOpen=false;render();},"View "+c.name),
@@ -1823,7 +1823,7 @@ function courseDetail(c){
       (c.role==="working" && !sched)?el("div",{class:"li-sub",style:"margin-top:3px"},
         "Not scheduled yet — set a start date (Edit → More details) and make sure the course has a school year with weekday pattern"):null),
     el("div",{class:"actions"},
-      c.role==="master"?el("button",{class:"btn small",onclick:()=>{State.ui.enrollOpen=true;render();}},"Enroll…"):null,
+      c.role==="master"?el("button",{class:"btn secondary small",onclick:()=>{State.ui.enrollOpen=true;render();}},"Enroll…"):null,
       iconBtn("download",()=>exportCoursesCSV([c], c.name),"Export this course as a CSV"),
       iconBtn("edit",()=>{State.ui.editingCourseId=c.id;State.ui.courseFormOpen=true;render();},"Edit course"),
       iconBtn("trash",()=>deleteCourse(c),"Delete course",{danger:true}))));
