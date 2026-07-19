@@ -184,7 +184,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.5.0", stage: "Stage 3 — Scheduling", schemaVersion: 8, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.5.1", stage: "Stage 3 — Scheduling", schemaVersion: 8, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -347,7 +347,8 @@ const State = {
         assignFormOpen: false, editingAssignId: null, quickAddOpen: false, editingYearId: null,
         colorsOpen: false, colorPick: null,    // Categories & Colors screen + its picker modal
         csvOpen: false, importSummary: null,   // the Import/Export pop-up + the after-import report
-        enrollOpen: false }                    // the Enroll-from-library pop-up (v0.5.0)
+        enrollOpen: false, enrollId: null,     // the Enroll-from-library pop-up + which master (v0.5.0/0.5.1)
+        courseView: "enrolled" }               // Courses tab: "enrolled" | "library" (v0.5.1)
 };
 
 /* --- 3.2 Blank data file & entity factories --- */
@@ -1286,6 +1287,7 @@ function courseSchedule(c){                      // → {dates:Map(assignmentId�
   const cad=Math.max(1, Math.min(c.cadence||5, y.weekdayPattern.length));
   const aligned=c.scheduleMode==="aligned";
   const lastWeek=aligned ? Math.max(...asg.map(a=>a.week||1)) : 0;
+  const needCompact=new Set(asg.map(a=>(a.week||1)+":"+(a.day||1))).size;   // v0.5.1: one slot per PLAN POSITION
   const weeks=[]; let ws=mondayOf(c.startDate), placed=0;
   for(let g=0; g<520; g++){                      // one school-week per pass; hard stop at 10 years
     const days=[];
@@ -1297,7 +1299,7 @@ function courseSchedule(c){                      // → {dates:Map(assignmentId�
       days.push(d);
     }
     weeks.push(days); placed+=days.length; ws=addDaysISO(ws,7);
-    if(aligned ? weeks.length>=lastWeek+8 : placed>=asg.length) break;
+    if(aligned ? weeks.length>=lastWeek+8 : placed>=needCompact) break;
   }
   const dates=new Map();
   if(aligned){                                   // keep plan-week positions; a fully-broken week spills forward
@@ -1307,9 +1309,14 @@ function courseSchedule(c){                      // → {dates:Map(assignmentId�
       const wk=weeks[Math.min(w,weeks.length-1)]||[];
       if(wk.length) dates.set(a.id, wk[Math.min(a.day||1,wk.length)-1]);
     });
-  } else {                                       // compact: the sequence fills every slot, no gaps
-    const flat=weeks.flat();
-    asg.forEach((a,i)=>{ if(i<flat.length) dates.set(a.id,flat[i]); });
+  } else {                                       // compact: the sequence fills every slot, no gaps —
+    const flat=weeks.flat();                     // v0.5.1 fix: rows sharing a plan day share the calendar day
+    let slot=-1, lastPos=null;                   // (Bible's reading + hymn on Week 1 Day 5 land together)
+    asg.forEach(a=>{
+      const pos=(a.week||1)+":"+(a.day||1);
+      if(pos!==lastPos){ slot++; lastPos=pos; }
+      if(slot<flat.length) dates.set(a.id,flat[slot]);
+    });
   }
   if(!dates.size) return null;
   const all=[...dates.values()].sort();
@@ -1376,8 +1383,8 @@ function currentModal(){                          // explicit Save/Cancel only; 
   if(ui.screen==="courses"){
     if(ui.importSummary) return importSummaryModal();      // the after-import report outranks everything else
     if(ui.csvOpen) return csvModal();
-    if(ui.enrollOpen && ui.selectedCourseId){
-      const c=State.data.courses.find(x=>x.id===ui.selectedCourseId);
+    if(ui.enrollOpen){
+      const c=State.data.courses.find(x=>x.id===(ui.enrollId||ui.selectedCourseId));
       if(c) return enrollModal(c);
     }
     if(ui.assignFormOpen && ui.selectedCourseId){
@@ -1561,9 +1568,18 @@ function renderCourses(){
   if(State.ui.colorsOpen) return colorsScreen();
   const sel = State.ui.selectedCourseId ? courseById(State.ui.selectedCourseId) : null;
   if(sel) return courseDetail(sel);
+  const lib = State.ui.courseView==="library";
   const wrap=el("div",{});
   wrap.append(el("h2",{class:"screen-title"},"Courses"),
-    el("p",{class:"screen-note"},"Everything you teach, imported or your own, in one hand-ordered list — the stripe is the category, the pill is the subject. Dates come later; this is the plan, not the calendar."));
+    el("p",{class:"screen-note"}, lib
+      ? "The library: every course you could teach — pristine originals, never scheduled. Enroll copies one to your enrolled list for chosen children and a start date."
+      : "What you're actually teaching — enrolled courses that can carry students, a start date, and a schedule."));
+  const segBtn=(key,label)=>el("button",{class:"btn small "+(State.ui.courseView===key?"":"quiet"),
+    onclick:()=>{State.ui.courseView=key;render();}},label);
+  const nEnr=State.data.courses.filter(c=>c.role!=="master").length,
+        nLib=State.data.courses.filter(c=>c.role==="master").length;
+  wrap.append(el("div",{class:"row",style:"margin:2px 0 10px"},
+    segBtn("enrolled","Enrolled ("+nEnr+")"), segBtn("library","Library ("+nLib+")")));
   const total=State.data.courses.length;
   wrap.append(el("div",{class:"spread",style:"margin:2px 0 12px"},
     el("div",{class:"row"},
@@ -1572,16 +1588,20 @@ function renderCourses(){
     el("div",{class:"row"},
       el("button",{class:"btn quiet small",onclick:()=>{State.ui.csvOpen=true;render();}},"Import / Export CSV"),
       el("button",{class:"btn quiet small",onclick:()=>{State.ui.colorsOpen=true;render();}},"Categories & Colors"))));
-  if(!total){
-    wrap.append(el("div",{class:"card"},el("div",{class:"empty"},"No courses yet — add your first above (piano practice is a fine place to start).")));
+  const stack=el("div",{class:"row-stack"});
+  const list=coursesAll().filter(c=>lib ? c.role==="master" : c.role!=="master");
+  if(!list.length){
+    wrap.append(el("div",{class:"card"},el("div",{class:"empty"}, lib
+      ? "The library is empty — Import / Export CSV above brings curriculum in."
+      : (nLib ? "Nothing enrolled yet — open the Library view and press Enroll on a course."
+              : "No courses yet — add your first above (piano practice is a fine place to start)."))));
     return wrap;
   }
-  const stack=el("div",{class:"row-stack"});
-  const list=coursesAll();
   list.forEach((c,i)=>{
     stack.append(el("div",{class:"srow",style:"border-left-color:"+catColor(c.category)},
       el("div",{class:"main"}, courseNameLine(c), courseMetaLine(c)),
       el("div",{class:"actions"},
+        c.role==="master"?el("button",{class:"btn small",onclick:()=>{State.ui.enrollId=c.id;State.ui.enrollOpen=true;render();}},"Enroll"):null,
         iconBtn("chevup",()=>moveCourse(c,-1),"Move "+c.name+" up",{disabled:i===0}),
         iconBtn("chevdown",()=>moveCourse(c,1),"Move "+c.name+" down",{disabled:i===list.length-1}),
         iconBtn("eye",()=>{State.ui.selectedCourseId=c.id;State.ui.assignFormOpen=false;State.ui.quickAddOpen=false;State.ui.courseFormOpen=false;render();},"View "+c.name),
@@ -1764,10 +1784,10 @@ function enrollModal(master){
       if(master.type!=="family" && !opts.studentIds.length){ toast("Pick at least one child", true); return; }
       if(!opts.yearId){ toast("Pick a school year", true); return; }
       const nc=enrollCourse(master,opts);
-      State.ui.enrollOpen=false; State.ui.selectedCourseId=nc.id; render();
+      State.ui.enrollOpen=false; State.ui.enrollId=null; State.ui.courseView="enrolled"; State.ui.selectedCourseId=nc.id; render();
       toast("Enrolled — this is the working copy; the library original is untouched");
     }},"Enroll"),
-    el("button",{class:"btn quiet",onclick:()=>{State.ui.enrollOpen=false;render();}},"Cancel")));
+    el("button",{class:"btn quiet",onclick:()=>{State.ui.enrollOpen=false;State.ui.enrollId=null;render();}},"Cancel")));
   card.append(stack);
   return card;
 }
