@@ -184,7 +184,7 @@ details.adv summary{cursor:pointer;color:var(--muted);font-size:14px;font-weight
    ================================================================ */
 
 /* --- 1.1 App identity & schema version --- */
-const APP = { name: "Homeschool Planner", version: "0.4.0", stage: "Stage 3 — Scheduling", schemaVersion: 7, dataFileName: "planner-data.json" };
+const APP = { name: "Homeschool Planner", version: "0.5.0", stage: "Stage 3 — Scheduling", schemaVersion: 8, dataFileName: "planner-data.json" };
 
 /* --- 1.2 Content taxonomy starter set (Handoff v5 §3a) --- */
 const TAXONOMY_STARTER = {
@@ -346,7 +346,8 @@ const State = {
         selectedCourseId: null, courseFormOpen: false, editingCourseId: null,        // Stage 2
         assignFormOpen: false, editingAssignId: null, quickAddOpen: false, editingYearId: null,
         colorsOpen: false, colorPick: null,    // Categories & Colors screen + its picker modal
-        csvOpen: false, importSummary: null }  // the Import/Export pop-up + the after-import report
+        csvOpen: false, importSummary: null,   // the Import/Export pop-up + the after-import report
+        enrollOpen: false }                    // the Enroll-from-library pop-up (v0.5.0)
 };
 
 /* --- 3.2 Blank data file & entity factories --- */
@@ -381,7 +382,9 @@ function newCourse(){ const t=nowISO(); return { id:uid(), createdAt:t, modified
   curriculum:"",                    // v7: where it came from — e.g. "Living Heritage Cycle 1 Group I"
   curriculumRevised:"",             // v7: that curriculum's last-revised date, e.g. "2025"
   gradeYears:"",                    // v7: which grades the course serves — e.g. "1st", "2nd-4th", "All"
-  frequency:"",                     // v7: the stated cadence, per strand — feeds the scheduling engine later
+  frequency:"",                     // v7: the stated cadence, per strand (words, for the owner's eye)
+  startDate:"",                     // v8: working courses — the calendar day scheduling projects from
+  scheduleMode:"compact",           // v8: "compact" (start at once, no gaps) | "aligned" (keep plan-week positions)
   yearId: State.data?.settings.activeSchoolYearId || null,
   weeks:32,                         // the course's own length in weeks (positions, not calendar — Stage 3 projects onto dates)
   cadence:5,                        // days per week — the width of the course's week/day grid; scheduling projects it in Stage 3
@@ -476,6 +479,13 @@ function upgradeSchema(data){
         });
         (data.assignments||[]).forEach(a=>{ if(!("resource" in a)) a.resource=""; });
         data.schemaVersion = 7; break;
+      case 7:    // v8: the scheduling round — working courses learn their start date and
+                 // how the plan projects onto the calendar (compact vs plan-week aligned).
+        (data.courses||[]).forEach(c=>{
+          if(!("startDate" in c)) c.startDate="";
+          if(!("scheduleMode" in c)) c.scheduleMode="compact";
+        });
+        data.schemaVersion = 8; break;
       default: data.schemaVersion = APP.schemaVersion;   // nothing to do
     }
   }
@@ -700,6 +710,7 @@ async function restoreFromBackup(entry){
    5.1 People   5.2 School years, breaks, terms, grades
    5.3 Taxonomy helpers   5.4 Courses   5.5 Assignments & repeating rules
    5.6 Course CSV import & export (the dialect the converters write)
+   5.7 Scheduling engine & enrollment (projection, never stored — v5 §2)
    ================================================================ */
 
 /* --- 5.1 People --- */
@@ -1257,6 +1268,72 @@ function exportCoursesCSV(courses, label){       // label: what to call the file
     ? "Choose “Save to Files” to keep the CSV — it opens in Excel or Numbers"
     : "Exported "+fname+".csv — it opens in Excel by double-click");
 }
+
+/* --- 5.7 Scheduling engine & enrollment --- */
+/* The locked v5 principle: scheduling is a PROJECTION. Nothing here is stored —
+   dates are computed fresh from (start date + cadence + the year's weekday
+   pattern and breaks) every time. Check-off instances arrive with the daily
+   view; until then the projection is a preview the owner can trust. */
+function addDaysISO(iso,n){ const d=new Date(iso+"T12:00:00"); d.setDate(d.getDate()+n);
+  return d.toISOString().slice(0,10); }
+function mondayOf(iso){ const shift=(new Date(iso+"T12:00:00").getDay()+6)%7; return addDaysISO(iso,-shift); }
+function inYearBreak(y,iso){ return (y.breaks||[]).some(b=>b.start&&b.end&&iso>=b.start&&iso<=b.end); }
+function courseSchedule(c){                      // → {dates:Map(assignmentId→ISO), first, last, aligned} or null
+  if(c.role!=="working" || !c.startDate) return null;
+  const y=State.data.schoolYears.find(x=>x.id===c.yearId);
+  const asg=courseAssignments(c.id);
+  if(!y || !(y.weekdayPattern||[]).length || !asg.length) return null;
+  const cad=Math.max(1, Math.min(c.cadence||5, y.weekdayPattern.length));
+  const aligned=c.scheduleMode==="aligned";
+  const lastWeek=aligned ? Math.max(...asg.map(a=>a.week||1)) : 0;
+  const weeks=[]; let ws=mondayOf(c.startDate), placed=0;
+  for(let g=0; g<520; g++){                      // one school-week per pass; hard stop at 10 years
+    const days=[];
+    for(let i=0;i<7 && days.length<cad;i++){
+      const d=addDaysISO(ws,i);
+      if(d<c.startDate) continue;                // the start week may begin mid-week
+      if(!y.weekdayPattern.includes(new Date(d+"T12:00:00").getDay())) continue;
+      if(inYearBreak(y,d)) continue;             // breaks contribute no slots — work slides past them
+      days.push(d);
+    }
+    weeks.push(days); placed+=days.length; ws=addDaysISO(ws,7);
+    if(aligned ? weeks.length>=lastWeek+8 : placed>=asg.length) break;
+  }
+  const dates=new Map();
+  if(aligned){                                   // keep plan-week positions; a fully-broken week spills forward
+    asg.forEach(a=>{
+      let w=(a.week||1)-1;
+      while(w<weeks.length-1 && !weeks[w].length) w++;
+      const wk=weeks[Math.min(w,weeks.length-1)]||[];
+      if(wk.length) dates.set(a.id, wk[Math.min(a.day||1,wk.length)-1]);
+    });
+  } else {                                       // compact: the sequence fills every slot, no gaps
+    const flat=weeks.flat();
+    asg.forEach((a,i)=>{ if(i<flat.length) dates.set(a.id,flat[i]); });
+  }
+  if(!dates.size) return null;
+  const all=[...dates.values()].sort();
+  return { dates, first:all[0], last:all[all.length-1], aligned };
+}
+function enrollCourse(master, opts){             // deep-clone a library master into a schedulable working course
+  const c=deepClone(master); const t=nowISO();
+  c.id=uid(); c.createdAt=t; c.modifiedAt=t;
+  c.role="working"; c.status="active";
+  c.yearId=opts.yearId||null;
+  c.studentIds=c.type==="family" ? [] : [...(opts.studentIds||[])];
+  c.startDate=opts.startDate||""; c.scheduleMode=opts.mode||"compact";
+  c.sortPos=Math.max(0,...State.data.courses.map(x=>x.sortPos))+1;
+  State.data.courses.push(c);
+  const bmap={};                                 // series links survive the clone with fresh ids
+  courseAssignments(master.id).forEach(a=>{
+    const n=deepClone(a); n.id=uid(); n.courseId=c.id;
+    if(n.batchId){ bmap[n.batchId]=bmap[n.batchId]||uid(); n.batchId=bmap[n.batchId]; }
+    State.data.assignments.push(n);
+  });
+  const y=State.data.schoolYears.find(x=>x.id===c.yearId);
+  markDirty("Enrolled from library", c.name+(y?" · "+y.label:""));
+  return c;
+}
 /* ================================================================
    SECTION 6 — UI
    Renders everything from State. No data lives in the DOM.
@@ -1299,6 +1376,10 @@ function currentModal(){                          // explicit Save/Cancel only; 
   if(ui.screen==="courses"){
     if(ui.importSummary) return importSummaryModal();      // the after-import report outranks everything else
     if(ui.csvOpen) return csvModal();
+    if(ui.enrollOpen && ui.selectedCourseId){
+      const c=State.data.courses.find(x=>x.id===ui.selectedCourseId);
+      if(c) return enrollModal(c);
+    }
     if(ui.assignFormOpen && ui.selectedCourseId){
       const c=courseById(ui.selectedCourseId);
       if(c) return assignmentForm(c, State.data.assignments.find(a=>a.id===ui.editingAssignId)||null);
@@ -1346,7 +1427,7 @@ function renderSetup(){
 }
 async function offerReconnect(container){
   if(!folderCapable()) return;
-  const saved = await idb.get("dirHandle").catch(()=>null);
+  const saved = State.storage.savedHandle || await idb.get("dirHandle").catch(()=>null);
   if(!saved) return;
   container.append(el("div",{class:"card"},
     el("h3",{},"Open your planner"),
@@ -1441,6 +1522,7 @@ function icon(name){ const sp=document.createElement("span"); sp.className="ic";
 
 function courseNameLine(c, big){                   // line 1: serif name · subject pill (soft tint) · plain focus text
   const l=el("div",{class:"name-line"}, el("span",{class:"sname"},c.name));
+  if(c.role==="master") l.append(el("span",{class:"thin-pill"},"Library"));   // v0.5.0 — masters are the pristine originals
   if(c.subject) l.append(el("span",{class:"subj-pill",style:"background:"+subjTint(c.subject)},c.subject));
   if(c.focus) l.append(el("span",{class:"focus-txt"},c.focus));
   if(c.status!=="active") l.append(el("span",{class:"pill gray"},c.status));
@@ -1644,6 +1726,52 @@ function importSummaryModal(){
   return card;
 }
 
+/* — Enroll (v0.5.0): clone a library master into a schedulable working course.
+     The lightweight step; the full bundle wizard (v5 §4) comes later. — */
+function enrollModal(master){
+  const y0=activeYear();
+  const opts={ studentIds:[], yearId:y0?y0.id:null, startDate:(y0&&y0.startDate)||"", mode:"compact" };
+  const card=el("div",{class:"card"},el("h3",{},"Enroll — "+master.name),
+    el("p",{class:"screen-note"},"This copies the library course into a real, schedulable course"
+      +(master.type==="family"?" for the whole family":" for the children you pick")
+      +". The library original stays untouched — curriculum updates always start from it."));
+  const stack=el("div",{class:"stack"});
+  if(master.type!=="family"){
+    const box=el("div",{},el("div",{class:"eyebrow",style:"margin-bottom:6px"},"Who is taking it"));
+    if(!students().length) box.append(el("div",{class:"li-sub"},"Add students on the Students tab first."));
+    students().forEach(st=>{
+      const chk=el("input",{type:"checkbox",onchange:e=>{
+        if(e.target.checked) opts.studentIds.push(st.id);
+        else opts.studentIds=opts.studentIds.filter(i=>i!==st.id); }});
+      box.append(el("label",{class:"row",style:"gap:8px;padding:3px 0;cursor:pointer;font-size:14px"},chk,kidCircle(st),st.name));
+    });
+    stack.append(box);
+  }
+  const yearSel=el("select",{onchange:e=>{opts.yearId=e.target.value||null;
+      const yy=State.data.schoolYears.find(x=>x.id===opts.yearId);
+      if(yy&&yy.startDate&&!startIn.value){ startIn.value=yy.startDate; opts.startDate=yy.startDate; }}},
+    State.data.schoolYears.filter(x=>!x.archived).map(x=>el("option",{value:x.id,selected:x.id===opts.yearId},x.label)));
+  const startIn=dateInput({value:opts.startDate,onchange:e=>opts.startDate=e.target.value});
+  const modeSel=el("select",{onchange:e=>opts.mode=e.target.value},
+    el("option",{value:"compact",selected:true},"Start at once — the sequence fills every school day, no gaps"),
+    el("option",{value:"aligned"},"Keep plan-week positions — Week 3 work stays in calendar week 3"));
+  stack.append(el("div",{class:"grid2"},
+    el("label",{class:"field"},"School year",yearSel),
+    el("label",{class:"field"},"Start date",startIn)),
+    el("label",{class:"field"},el("div",{},"How the plan meets the calendar ",el("span",{class:"hint"},"changeable later in Edit")),modeSel));
+  stack.append(el("div",{class:"row"},
+    el("button",{class:"btn",onclick:()=>{
+      if(master.type!=="family" && !opts.studentIds.length){ toast("Pick at least one child", true); return; }
+      if(!opts.yearId){ toast("Pick a school year", true); return; }
+      const nc=enrollCourse(master,opts);
+      State.ui.enrollOpen=false; State.ui.selectedCourseId=nc.id; render();
+      toast("Enrolled — this is the working copy; the library original is untouched");
+    }},"Enroll"),
+    el("button",{class:"btn quiet",onclick:()=>{State.ui.enrollOpen=false;render();}},"Cancel")));
+  card.append(stack);
+  return card;
+}
+
 function courseDetail(c){
   const wrap=el("div",{});
   const switcher=el("select",{style:"max-width:260px","aria-label":"Jump to another course",
@@ -1658,6 +1786,7 @@ function courseDetail(c){
     el("button",{class:"btn small",onclick:()=>{State.ui.editingAssignId=null;State.ui.assignFormOpen=true;render();}},"Add an assignment")));
   const yr=State.data.schoolYears.find(y=>y.id===c.yearId);
   const head=el("div",{class:"card",style:"border-left:4px solid "+catColor(c.category)});
+  const sched=courseSchedule(c);                                             // v0.5.0 — projection, computed fresh
   const facts=[yr?yr.label:null, c.lessonMinutes?"~"+c.lessonMinutes+" min/lesson":null,
     c.curriculum?c.curriculum+(c.curriculumRevised?" ("+c.curriculumRevised+")":""):null,
     c.gradeYears?"Grades: "+c.gradeYears:null,
@@ -1667,8 +1796,14 @@ function courseDetail(c){
       courseNameLine(c),
       courseMetaLine(c),
       facts.length?el("div",{class:"li-sub",style:"margin-top:6px"},facts.join(" · ")):null,
-      c.frequency?el("div",{class:"li-sub",style:"margin-top:3px"},"Cadence: "+c.frequency):null),
+      c.frequency?el("div",{class:"li-sub",style:"margin-top:3px"},"Cadence: "+c.frequency):null,
+      sched?el("div",{class:"li-sub",style:"margin-top:3px;font-weight:600"},
+        "Scheduled: "+fmtDate(sched.first)+" – "+fmtDate(sched.last)
+        +(sched.aligned?" · keeping plan-week positions":" · compact — starts at once, no gaps")):null,
+      (c.role==="working" && !sched)?el("div",{class:"li-sub",style:"margin-top:3px"},
+        "Not scheduled yet — set a start date (Edit → More details) and make sure the course has a school year with weekday pattern"):null),
     el("div",{class:"actions"},
+      c.role==="master"?el("button",{class:"btn small",onclick:()=>{State.ui.enrollOpen=true;render();}},"Enroll…"):null,
       iconBtn("download",()=>exportCoursesCSV([c], c.name),"Export this course as a CSV"),
       iconBtn("edit",()=>{State.ui.editingCourseId=c.id;State.ui.courseFormOpen=true;render();},"Edit course"),
       iconBtn("trash",()=>deleteCourse(c),"Delete course",{danger:true}))));
@@ -1699,7 +1834,8 @@ function courseDetail(c){
         el("div",{class:"name-line",style:"margin-bottom:2px"},el("span",{class:"aname"},a.title),
           a.type!=="Lesson"?el("span",{class:"subj-pill"},a.type):null,
           a.batchId?el("span",{class:"thin-pill"},"series"):null,
-          overridden?el("span",{class:"pill gold"},eff.subject+(eff.focus?" → "+eff.focus:"")):null),
+          overridden?el("span",{class:"pill gold"},eff.subject+(eff.focus?" → "+eff.focus:"")):null,
+          (sched&&sched.dates.get(a.id))?el("span",{class:"li-sub",style:"margin-left:auto;white-space:nowrap"},fmtDate(sched.dates.get(a.id))):null),
         (subBits.length||a.link)?sub:null),
       el("div",{class:"actions"},
         iconBtn("chevup",()=>moveAssignment(a,-1),"Move up",{disabled:i===0}),
@@ -1813,6 +1949,10 @@ function courseForm(existing){
   const currRevIn=el("input",{type:"text",value:c.curriculumRevised,placeholder:"e.g. 2025",oninput:e=>c.curriculumRevised=e.target.value});
   const gradeYrsIn=el("input",{type:"text",value:c.gradeYears,placeholder:"e.g. 1st, 2nd-4th, All",oninput:e=>c.gradeYears=e.target.value});
   const freqIn=el("input",{type:"text",value:c.frequency,placeholder:"e.g. 2x/wk, 10 min (readings); 3x/wk (nature)",oninput:e=>c.frequency=e.target.value});
+  const startIn=dateInput({value:c.startDate,onchange:e=>c.startDate=e.target.value});
+  const modeSel=el("select",{onchange:e=>c.scheduleMode=e.target.value},
+    el("option",{value:"compact",selected:c.scheduleMode!=="aligned"},"Start at once — no gaps"),
+    el("option",{value:"aligned",selected:c.scheduleMode==="aligned"},"Keep plan-week positions"));
   const linksIn=el("textarea",{placeholder:"One link per line (songs, videos, PDFs…)",oninput:e=>c.links=e.target.value.split("\n").map(s=>s.trim()).filter(Boolean)},c.links.join("\n"));
   const notesIn=el("textarea",{placeholder:"Notes (optional)",oninput:e=>c.notes=e.target.value},c.notes);
   const statusSel=el("select",{onchange:e=>c.status=e.target.value},
@@ -1836,7 +1976,9 @@ function courseForm(existing){
           el("label",{class:"field"},"Typical lesson minutes",minIn),
           el("label",{class:"field"},el("div",{},"Grade years ",el("span",{class:"hint"},"who the course serves")),gradeYrsIn),
           el("label",{class:"field"},el("div",{},"Curriculum ",el("span",{class:"hint"},"where it came from")),currIn),
-          el("label",{class:"field"},el("div",{},"Curriculum revised ",el("span",{class:"hint"},"its last-revised year")),currRevIn)),
+          el("label",{class:"field"},el("div",{},"Curriculum revised ",el("span",{class:"hint"},"its last-revised year")),currRevIn),
+          c.role==="working"?el("label",{class:"field"},el("div",{},"Schedule start date ",el("span",{class:"hint"},"projection begins here")),startIn):null,
+          c.role==="working"?el("label",{class:"field"},"How the plan meets the calendar",modeSel):null),
         el("label",{class:"field"},el("div",{},"Cadence ",el("span",{class:"hint"},"the stated rhythm, in words — scheduling reads this later")),freqIn),
         el("div",{class:"row",style:"gap:22px"},
           el("label",{class:"row",style:"font-size:14px;font-weight:600;gap:8px;cursor:pointer"},parentChk,"Parent-led (shows in the Mom view later)"),
@@ -1849,7 +1991,7 @@ function courseForm(existing){
             type:c.type,studentIds:[...c.studentIds],yearId:c.yearId,cycle:c.cycle,weeks:c.weeks,cadence:c.cadence,
             lessonMinutes:c.lessonMinutes,parentLed:c.parentLed,links:[...c.links],notes:c.notes,status:c.status,
             optional:c.optional,curriculum:c.curriculum,curriculumRevised:c.curriculumRevised,
-            gradeYears:c.gradeYears,frequency:c.frequency});
+            gradeYears:c.gradeYears,frequency:c.frequency,startDate:c.startDate,scheduleMode:c.scheduleMode});
           if(!saveCourse(existing,false)) return; }
         else if(!saveCourse(c,true)) return;
         State.ui.courseFormOpen=false; State.ui.editingCourseId=null; render();
@@ -2335,6 +2477,7 @@ async function renderBackupList(box){
   try{
     if(folderCapable()){
       const saved = await idb.get("dirHandle").catch(()=>null);
+      State.storage.savedHandle = saved || null;           // v0.5.0: setup screen offers one-click reopen
       if(saved && await permissionOK(saved,false)){        // silent reconnect if already granted
         State.storage.dirHandle=saved;
         try{ await loadFromFolder(); }catch(e){ console.warn("Auto-load failed",e); State.data=null; }
